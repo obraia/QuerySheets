@@ -138,6 +138,24 @@ fn query_outputs_casted_group_by_aggregates_with_mixed_tempo_values() -> Result<
 }
 
 #[test]
+fn query_outputs_group_by_count_column_with_cast_expression() -> Result<(), Box<dyn Error>> {
+    let tmp = tempdir()?;
+    let fixture = tmp.path().join("times.xlsx");
+    create_activity_time_fixture(&fixture)?;
+
+    let sql = "SELECT Atividade, COUNT(CAST(Tempo AS FLOAT)) AS NumericTempoRows FROM Times GROUP BY Atividade";
+    let stdout = run_cli_query(&fixture, sql, None, true)?;
+    let lines = stdout.lines().collect::<Vec<_>>();
+
+    assert_eq!(lines.len(), 3);
+    assert_eq!(lines[0], "Atividade\tNumericTempoRows");
+    assert_eq!(lines[1], "A\t2");
+    assert_eq!(lines[2], "B\t1");
+
+    Ok(())
+}
+
+#[test]
 fn query_outputs_rows_with_limit_and_offset() -> Result<(), Box<dyn Error>> {
     let tmp = tempdir()?;
     let fixture = tmp.path().join("customers.xlsx");

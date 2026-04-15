@@ -191,3 +191,74 @@ fn executes_group_by_with_casted_numeric_aggregations() {
         ]
     );
 }
+
+#[test]
+fn executes_group_by_with_count_column_ignoring_nulls() {
+    let source = MockSource {
+        schema: Schema::new(vec![Column::new("segment"), Column::new("tempo")]),
+        rows: vec![
+            Row::new(vec![Value::String("Enterprise".into()), Value::Int(10)]),
+            Row::new(vec![Value::String("Enterprise".into()), Value::Null]),
+            Row::new(vec![Value::String("SMB".into()), Value::String("5.5".into())]),
+            Row::new(vec![Value::String("SMB".into()), Value::Null]),
+        ],
+    };
+
+    let engine = SqlLikeQueryEngine;
+    let execution = engine
+        .execute_with_schema(
+            &source,
+            "SELECT segment, COUNT(tempo) AS filled_tempo FROM planilha GROUP BY segment",
+        )
+        .expect("query should execute");
+
+    let rows = execution.rows.collect::<Vec<_>>();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        rows[0].values,
+        vec![Value::String("Enterprise".into()), Value::Int(1)]
+    );
+    assert_eq!(
+        rows[1].values,
+        vec![Value::String("SMB".into()), Value::Int(1)]
+    );
+}
+
+#[test]
+fn executes_group_by_with_count_cast_expression() {
+    let source = MockSource {
+        schema: Schema::new(vec![Column::new("segment"), Column::new("tempo")]),
+        rows: vec![
+            Row::new(vec![Value::String("Enterprise".into()), Value::Int(10)]),
+            Row::new(vec![
+                Value::String("Enterprise".into()),
+                Value::String("-".into()),
+            ]),
+            Row::new(vec![
+                Value::String("Enterprise".into()),
+                Value::String("20".into()),
+            ]),
+            Row::new(vec![Value::String("SMB".into()), Value::String("5.5".into())]),
+            Row::new(vec![Value::String("SMB".into()), Value::String("n/a".into())]),
+        ],
+    };
+
+    let engine = SqlLikeQueryEngine;
+    let execution = engine
+        .execute_with_schema(
+            &source,
+            "SELECT segment, COUNT(CAST(tempo AS FLOAT)) AS numeric_tempo_rows FROM planilha GROUP BY segment",
+        )
+        .expect("query should execute");
+
+    let rows = execution.rows.collect::<Vec<_>>();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        rows[0].values,
+        vec![Value::String("Enterprise".into()), Value::Int(2)]
+    );
+    assert_eq!(
+        rows[1].values,
+        vec![Value::String("SMB".into()), Value::Int(1)]
+    );
+}

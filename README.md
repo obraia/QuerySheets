@@ -20,7 +20,7 @@ Implemented today:
 - Simple arithmetic expressions in projection (`+`, `-`, `*`, `/`, `%`)
 - Conversion expressions via `CAST(... AS ...)`
 - Projected schema support (used by CLI header output)
-- Aggregations with `GROUP BY` using `COUNT(*)`, `SUM(column)`, `AVG(column)`, `MIN(column)`, and `MAX(column)`
+- Aggregations with `GROUP BY` using `COUNT(*)`, `COUNT(column)`, `SUM(column)`, `AVG(column)`, `MIN(column)`, and `MAX(column)`
 - Ordering with `ORDER BY` (`ASC`/`DESC`, optional `NULLS FIRST`/`NULLS LAST`)
 - Pagination with `LIMIT` and `OFFSET`
 - CLI with `query` command, `--sheet`, `--header`, and `--case-sensitive-strings`
@@ -28,7 +28,7 @@ Implemented today:
 - Integration tests with generated `.xlsx` fixtures
 
 Not implemented yet:
-- Additional aggregations (`COUNT(column)`, `STDDEV`, etc.)
+- Additional aggregations (`STDDEV`, etc.)
 - Node bindings (`napi-rs`)
 - Parallel execution
 - Custom Excel parser
@@ -200,6 +200,7 @@ Supported:
 - Aggregation:
   - `GROUP BY` with grouped columns in projection
   - `COUNT(*)`
+  - `COUNT(column)`
   - `SUM(column)`
   - `AVG(column)`
   - `MIN(column)`
@@ -247,7 +248,7 @@ Phase 1 (in progress):
 - `SELECT` + `WHERE`
 
 Phase 2:
-- Aggregations (`GROUP BY`) - current support: `COUNT(*)`, `SUM(column)`, `AVG(column)`, `MIN(column)`, `MAX(column)`
+- Aggregations (`GROUP BY`) - current support: `COUNT(*)`, `COUNT(column)`, `SUM(column)`, `AVG(column)`, `MIN(column)`, `MAX(column)`
 - export improvements (format options)
 
 Phase 3:
@@ -267,6 +268,10 @@ Phase 4:
 ## Documentation Changelog
 
 Use this section to keep documentation changes visible over time.
+
+- 2026-04-15
+  - Added `COUNT(column)` aggregation support (counts non-NULL values).
+  - Added query engine and CLI integration tests for `COUNT(column)` scenarios.
 
 - 2026-04-15
   - Added CLI flag `--case-sensitive-strings` to opt into case-sensitive string comparison in `WHERE` and `ORDER BY`.

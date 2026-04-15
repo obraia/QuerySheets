@@ -13,6 +13,9 @@ use sqlparser::ast::{
 pub(crate) enum AggregationSelectItem {
     GroupKey(usize),
     CountRows,
+    CountValues {
+        value_expr: Expr,
+    },
     SumColumn {
         value_expr: Expr,
         expression: String,
@@ -88,6 +91,7 @@ pub(crate) fn build_group_by_aggregation_plan(
             SelectItem::UnnamedExpr(expr) => {
                 let plan_item = parse_group_select_expr(schema, expr, group_by_column_indexes)?;
                 if matches!(plan_item, AggregationSelectItem::CountRows)
+                    || matches!(plan_item, AggregationSelectItem::CountValues { .. })
                     || matches!(plan_item, AggregationSelectItem::SumColumn { .. })
                     || matches!(plan_item, AggregationSelectItem::AvgColumn { .. })
                     || matches!(plan_item, AggregationSelectItem::MinColumn { .. })
@@ -102,6 +106,7 @@ pub(crate) fn build_group_by_aggregation_plan(
             SelectItem::ExprWithAlias { expr, alias } => {
                 let plan_item = parse_group_select_expr(schema, expr, group_by_column_indexes)?;
                 if matches!(plan_item, AggregationSelectItem::CountRows)
+                    || matches!(plan_item, AggregationSelectItem::CountValues { .. })
                     || matches!(plan_item, AggregationSelectItem::SumColumn { .. })
                     || matches!(plan_item, AggregationSelectItem::AvgColumn { .. })
                     || matches!(plan_item, AggregationSelectItem::MinColumn { .. })
@@ -192,6 +197,10 @@ pub(crate) fn execute_group_by_aggregation<'a>(
                     Value::Int(*count)
                 }
                 (
+                    AggregationSelectItem::CountValues { .. },
+                    GroupAggregationState::CountValues(count),
+                ) => Value::Int(*count),
+                (
                     AggregationSelectItem::SumColumn { .. },
                     GroupAggregationState::Sum(sum_accumulator),
                 ) => sum_accumulator.to_value(),
@@ -251,6 +260,9 @@ fn parse_group_select_expr(
                 parse_single_column_aggregate_argument(schema, function, expr)?
             {
                 return match aggregate_kind {
+                    AggregateFunctionKind::Count => Ok(AggregationSelectItem::CountValues {
+                        value_expr,
+                    }),
                     AggregateFunctionKind::Sum => Ok(AggregationSelectItem::SumColumn {
                         value_expr,
                         expression: expr.to_string(),
@@ -285,7 +297,9 @@ fn parse_single_column_aggregate_argument(
         return Ok(None);
     };
 
-    let aggregate_kind = if function_name.value.eq_ignore_ascii_case("sum") {
+    let aggregate_kind = if function_name.value.eq_ignore_ascii_case("count") {
+        AggregateFunctionKind::Count
+    } else if function_name.value.eq_ignore_ascii_case("sum") {
         AggregateFunctionKind::Sum
     } else if function_name.value.eq_ignore_ascii_case("avg") {
         AggregateFunctionKind::Avg
@@ -379,6 +393,7 @@ fn validate_aggregate_value_expr(
 
 #[derive(Debug, Clone, Copy)]
 enum AggregateFunctionKind {
+    Count,
     Sum,
     Avg,
     Min,
@@ -429,6 +444,7 @@ struct GroupByState {
 enum GroupAggregationState {
     GroupKey,
     CountRows(i64),
+    CountValues(i64),
     Sum(SumAccumulator),
     Avg(AvgAccumulator),
     Min(MinMaxAccumulator),
@@ -585,6 +601,7 @@ fn initial_group_state(select_items: &[AggregationSelectItem]) -> Vec<GroupAggre
         .map(|item| match item {
             AggregationSelectItem::GroupKey(_) => GroupAggregationState::GroupKey,
             AggregationSelectItem::CountRows => GroupAggregationState::CountRows(0),
+            AggregationSelectItem::CountValues { .. } => GroupAggregationState::CountValues(0),
             AggregationSelectItem::SumColumn { .. } => {
                 GroupAggregationState::Sum(SumAccumulator::default())
             }
@@ -612,6 +629,15 @@ fn apply_row_to_group_state(
             (AggregationSelectItem::GroupKey(_), _) => {}
             (AggregationSelectItem::CountRows, GroupAggregationState::CountRows(count)) => {
                 *count += 1;
+            }
+            (
+                AggregationSelectItem::CountValues { value_expr },
+                GroupAggregationState::CountValues(count),
+            ) => {
+                let value = eval_value(value_expr, row, schema)?;
+                if !matches!(value, Value::Null) {
+                    *count += 1;
+                }
             }
             (
                 AggregationSelectItem::SumColumn {
