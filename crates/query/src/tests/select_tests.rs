@@ -101,3 +101,24 @@ fn executes_where_string_comparison_case_insensitive() {
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].values, vec![Value::String("bia".into())]);
 }
+
+#[test]
+fn executes_where_string_comparison_case_sensitive_when_enabled() {
+    let source = MockSource {
+        schema: Schema::new(vec![Column::new("name"), Column::new("age")]),
+        rows: vec![
+            Row::new(vec![Value::String("ana".into()), Value::Int(10)]),
+            Row::new(vec![Value::String("bia".into()), Value::Int(20)]),
+            Row::new(vec![Value::String("BIA".into()), Value::Int(30)]),
+        ],
+    };
+
+    let engine = SqlLikeQueryEngine.with_case_sensitive_strings(true);
+    let result = engine
+        .execute(&source, "SELECT name FROM planilha WHERE name = 'BIA'")
+        .expect("query should execute")
+        .collect::<Vec<_>>();
+
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].values, vec![Value::String("BIA".into())]);
+}

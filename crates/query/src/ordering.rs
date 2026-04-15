@@ -1,7 +1,7 @@
 use crate::expr::{eval_predicate, eval_value};
 use crate::projection::{ProjectionItem, project_row};
 use crate::text::compare_text_case_insensitive;
-use crate::{QueryError, QueryExecution};
+use crate::{QueryError, QueryExecution, StringComparisonMode};
 use query_sheets_core::{DataSource, Row, Schema, Value};
 use sqlparser::ast::{Expr, OrderByExpr, UnaryOperator, Value as SqlValue};
 use std::cmp::Ordering;
@@ -13,12 +13,14 @@ pub(crate) fn execute_select_with_order_by<'a>(
     projection: &[ProjectionItem],
     projected_schema: Schema,
     order_by: &[OrderByExpr],
+    string_comparison_mode: StringComparisonMode,
 ) -> Result<QueryExecution<'a>, QueryError> {
     let filtered_rows = source
         .scan()
         .filter(|row| {
             if let Some(expr) = where_expr {
-                return eval_predicate(expr, row, source_schema).unwrap_or(false);
+                return eval_predicate(expr, row, source_schema, string_comparison_mode)
+                    .unwrap_or(false);
             }
 
             true
@@ -39,7 +41,9 @@ pub(crate) fn execute_select_with_order_by<'a>(
         .collect::<Result<Vec<_>, _>>()?;
 
     validate_order_by_types(order_by, &sortable_rows)?;
-    sortable_rows.sort_by(|left, right| compare_sortable_rows(left, right, order_by));
+    sortable_rows.sort_by(|left, right| {
+        compare_sortable_rows(left, right, order_by, string_comparison_mode)
+    });
 
     let rows = sortable_rows.into_iter().map(|sortable| sortable.row);
     Ok(QueryExecution {
@@ -51,6 +55,7 @@ pub(crate) fn execute_select_with_order_by<'a>(
 pub(crate) fn apply_order_by_to_execution<'a>(
     execution: QueryExecution<'a>,
     order_by: &[OrderByExpr],
+    string_comparison_mode: StringComparisonMode,
 ) -> Result<QueryExecution<'a>, QueryError> {
     if order_by.is_empty() {
         return Ok(execution);
@@ -63,7 +68,9 @@ pub(crate) fn apply_order_by_to_execution<'a>(
 
     validate_order_by_types(order_by, &sortable_rows)?;
 
-    sortable_rows.sort_by(|left, right| compare_sortable_rows(left, right, order_by));
+    sortable_rows.sort_by(|left, right| {
+        compare_sortable_rows(left, right, order_by, string_comparison_mode)
+    });
 
     let rows = sortable_rows.into_iter().map(|sortable| sortable.row);
     Ok(QueryExecution {
@@ -202,12 +209,23 @@ fn validate_order_by_types(order_by: &[OrderByExpr], rows: &[SortableRow]) -> Re
     Ok(())
 }
 
-fn compare_sortable_rows(left: &SortableRow, right: &SortableRow, order_by: &[OrderByExpr]) -> Ordering {
+fn compare_sortable_rows(
+    left: &SortableRow,
+    right: &SortableRow,
+    order_by: &[OrderByExpr],
+    string_comparison_mode: StringComparisonMode,
+) -> Ordering {
     for (idx, item) in order_by.iter().enumerate() {
         let nulls_first = item.nulls_first.unwrap_or(false);
         let asc = item.asc.unwrap_or(true);
 
-        let ordering = compare_order_values(&left.keys[idx], &right.keys[idx], asc, nulls_first);
+        let ordering = compare_order_values(
+            &left.keys[idx],
+            &right.keys[idx],
+            asc,
+            nulls_first,
+            string_comparison_mode,
+        );
 
         if ordering != Ordering::Equal {
             return ordering;
@@ -217,7 +235,13 @@ fn compare_sortable_rows(left: &SortableRow, right: &SortableRow, order_by: &[Or
     Ordering::Equal
 }
 
-fn compare_order_values(left: &Value, right: &Value, asc: bool, nulls_first: bool) -> Ordering {
+fn compare_order_values(
+    left: &Value,
+    right: &Value,
+    asc: bool,
+    nulls_first: bool,
+    string_comparison_mode: StringComparisonMode,
+) -> Ordering {
     match (left, right) {
         (Value::Null, Value::Null) => Ordering::Equal,
         (Value::Null, _) => {
@@ -245,7 +269,12 @@ fn compare_order_values(left: &Value, right: &Value, asc: bool, nulls_first: boo
             apply_sort_direction(a.partial_cmp(b).unwrap_or(Ordering::Equal), asc)
         }
         (Value::String(a), Value::String(b)) => {
-            apply_sort_direction(compare_text_case_insensitive(a, b), asc)
+            let ordering = match string_comparison_mode {
+                StringComparisonMode::CaseInsensitive => compare_text_case_insensitive(a, b),
+                StringComparisonMode::CaseSensitive => a.cmp(b),
+            };
+
+            apply_sort_direction(ordering, asc)
         }
         (Value::Bool(a), Value::Bool(b)) => apply_sort_direction(a.cmp(b), asc),
         _ => Ordering::Equal,

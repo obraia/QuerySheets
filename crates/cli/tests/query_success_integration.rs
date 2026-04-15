@@ -2,6 +2,7 @@ mod common;
 
 use common::{
     create_activity_time_fixture, create_customers_fixture, create_sales_fixture, run_cli_query,
+    run_cli_query_with_case_sensitive_strings,
 };
 use std::error::Error;
 use tempfile::tempdir;
@@ -222,6 +223,22 @@ fn query_outputs_rows_with_case_insensitive_where_string_match() -> Result<(), B
     assert_eq!(lines[0], "CustomerId\tSegment");
     assert_eq!(lines[1], "C-001\tEnterprise");
     assert_eq!(lines[2], "C-003\tEnterprise");
+
+    Ok(())
+}
+
+#[test]
+fn query_outputs_rows_with_case_sensitive_strings_flag() -> Result<(), Box<dyn Error>> {
+    let tmp = tempdir()?;
+    let fixture = tmp.path().join("customers.xlsx");
+    create_customers_fixture(&fixture)?;
+
+    let sql = "SELECT CustomerId, Segment FROM Customers WHERE Segment = 'enterprise'";
+    let stdout = run_cli_query_with_case_sensitive_strings(&fixture, sql, None, true, true)?;
+    let lines = stdout.lines().collect::<Vec<_>>();
+
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0], "CustomerId\tSegment");
 
     Ok(())
 }

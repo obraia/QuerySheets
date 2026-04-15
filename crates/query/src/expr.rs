@@ -1,4 +1,5 @@
 use crate::QueryError;
+use crate::StringComparisonMode;
 use crate::text::compare_text_case_insensitive;
 use query_sheets_core::{Row, Schema, Value};
 use sqlparser::ast::{BinaryOperator, DataType, Expr, Ident, UnaryOperator, Value as SqlValue};
@@ -15,14 +16,25 @@ pub(crate) fn resolve_compound_column(schema: &Schema, identifiers: &[Ident]) ->
     resolve_column_name(schema, &last.value)
 }
 
-pub(crate) fn eval_predicate(expr: &Expr, row: &Row, schema: &Schema) -> Result<bool, QueryError> {
+pub(crate) fn eval_predicate(
+    expr: &Expr,
+    row: &Row,
+    schema: &Schema,
+    string_comparison_mode: StringComparisonMode,
+) -> Result<bool, QueryError> {
     match expr {
         Expr::BinaryOp { left, op, right } => match op {
             BinaryOperator::And => {
-                Ok(eval_predicate(left, row, schema)? && eval_predicate(right, row, schema)?)
+                Ok(
+                    eval_predicate(left, row, schema, string_comparison_mode)?
+                        && eval_predicate(right, row, schema, string_comparison_mode)?,
+                )
             }
             BinaryOperator::Or => {
-                Ok(eval_predicate(left, row, schema)? || eval_predicate(right, row, schema)?)
+                Ok(
+                    eval_predicate(left, row, schema, string_comparison_mode)?
+                        || eval_predicate(right, row, schema, string_comparison_mode)?,
+                )
             }
             BinaryOperator::Eq
             | BinaryOperator::NotEq
@@ -32,11 +44,11 @@ pub(crate) fn eval_predicate(expr: &Expr, row: &Row, schema: &Schema) -> Result<
             | BinaryOperator::LtEq => {
                 let left_value = eval_value(left, row, schema)?;
                 let right_value = eval_value(right, row, schema)?;
-                compare_values(op, &left_value, &right_value)
+                compare_values(op, &left_value, &right_value, string_comparison_mode)
             }
             _ => Err(QueryError::UnsupportedWhere(expr.to_string())),
         },
-        Expr::Nested(inner) => eval_predicate(inner, row, schema),
+        Expr::Nested(inner) => eval_predicate(inner, row, schema, string_comparison_mode),
         Expr::Value(SqlValue::Boolean(v)) => Ok(*v),
         _ => Err(QueryError::UnsupportedWhere(expr.to_string())),
     }
@@ -177,7 +189,12 @@ fn eval_arithmetic_float(op: &BinaryOperator, left: f64, right: f64) -> Result<V
     Ok(Value::Float(value))
 }
 
-fn compare_values(op: &BinaryOperator, left: &Value, right: &Value) -> Result<bool, QueryError> {
+fn compare_values(
+    op: &BinaryOperator,
+    left: &Value,
+    right: &Value,
+    string_comparison_mode: StringComparisonMode,
+) -> Result<bool, QueryError> {
     match (left, right) {
         (Value::Int(a), Value::Int(b)) => Ok(compare_ordering(op, a.cmp(b))),
         (Value::Float(a), Value::Float(b)) => {
@@ -197,7 +214,12 @@ fn compare_values(op: &BinaryOperator, left: &Value, right: &Value) -> Result<bo
             Ok(compare_ordering(op, ordering))
         }
         (Value::String(a), Value::String(b)) => {
-            Ok(compare_ordering(op, compare_text_case_insensitive(a, b)))
+            let ordering = match string_comparison_mode {
+                StringComparisonMode::CaseInsensitive => compare_text_case_insensitive(a, b),
+                StringComparisonMode::CaseSensitive => a.cmp(b),
+            };
+
+            Ok(compare_ordering(op, ordering))
         }
         (Value::Bool(a), Value::Bool(b)) => Ok(compare_ordering(op, a.cmp(b))),
         (Value::Null, Value::Null) => Ok(matches!(op, BinaryOperator::Eq | BinaryOperator::GtEq | BinaryOperator::LtEq)),

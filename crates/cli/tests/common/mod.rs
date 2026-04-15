@@ -141,6 +141,38 @@ pub fn run_cli_query(
     Ok(stdout)
 }
 
+pub fn run_cli_query_with_case_sensitive_strings(
+    file: &Path,
+    sql: &str,
+    sheet: Option<&str>,
+    header: bool,
+    case_sensitive_strings: bool,
+) -> Result<String, Box<dyn Error>> {
+    let mut command = Command::cargo_bin("query-sheets")?;
+    command
+        .arg("query")
+        .arg("--file")
+        .arg(file)
+        .arg("--sql")
+        .arg(sql);
+
+    if let Some(sheet_name) = sheet {
+        command.arg("--sheet").arg(sheet_name);
+    }
+
+    if header {
+        command.arg("--header");
+    }
+
+    if case_sensitive_strings {
+        command.arg("--case-sensitive-strings");
+    }
+
+    let assert = command.assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone())?;
+    Ok(stdout)
+}
+
 pub fn run_cli_export(
     file: &Path,
     sql: &str,

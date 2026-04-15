@@ -23,7 +23,7 @@ Implemented today:
 - Aggregations with `GROUP BY` using `COUNT(*)`, `SUM(column)`, `AVG(column)`, `MIN(column)`, and `MAX(column)`
 - Ordering with `ORDER BY` (`ASC`/`DESC`, optional `NULLS FIRST`/`NULLS LAST`)
 - Pagination with `LIMIT` and `OFFSET`
-- CLI with `query` command, `--sheet`, and `--header`
+- CLI with `query` command, `--sheet`, `--header`, and `--case-sensitive-strings`
 - CSV/JSON/JSONL export inferred from `--output` extension (`.csv`, `.json`, `.jsonl`)
 - Integration tests with generated `.xlsx` fixtures
 
@@ -170,6 +170,16 @@ cargo run -p query-sheets-cli -- query \
   --header
 ```
 
+Enable case-sensitive string comparison for `WHERE` and `ORDER BY`:
+
+```bash
+cargo run -p query-sheets-cli -- query \
+  --file ./planilha.xlsx \
+  --sql "SELECT CustomerId, Segment FROM Customers WHERE Segment = 'enterprise'" \
+  --header \
+  --case-sensitive-strings
+```
+
 ## SQL Support (Current)
 
 Supported:
@@ -184,8 +194,9 @@ Supported:
   - simple arithmetic expressions in projection
   - conversion with `CAST(expression AS type)`
 - String comparison semantics:
-  - string comparisons in `WHERE` are case-insensitive
-  - string sorting in `ORDER BY` is case-insensitive
+  - default: string comparisons in `WHERE` are case-insensitive
+  - default: string sorting in `ORDER BY` is case-insensitive
+  - optional strict mode via CLI flag `--case-sensitive-strings`
 - Aggregation:
   - `GROUP BY` with grouped columns in projection
   - `COUNT(*)`
@@ -256,6 +267,10 @@ Phase 4:
 ## Documentation Changelog
 
 Use this section to keep documentation changes visible over time.
+
+- 2026-04-15
+  - Added CLI flag `--case-sensitive-strings` to opt into case-sensitive string comparison in `WHERE` and `ORDER BY`.
+  - Added query engine and CLI integration tests covering the configurable comparison mode.
 
 - 2026-04-15
   - Changed string comparison behavior to case-insensitive in `WHERE` and `ORDER BY`.

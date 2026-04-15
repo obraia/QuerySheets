@@ -27,6 +27,12 @@ enum Commands {
         header: bool,
         #[arg(long, help = "Caminho do arquivo de saída (.csv, .json ou .jsonl)")]
         output: Option<String>,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Ativa comparação de texto case-sensitive no WHERE e ORDER BY"
+        )]
+        case_sensitive_strings: bool,
     },
 }
 
@@ -47,12 +53,13 @@ fn run() -> Result<(), String> {
             sheet,
             header,
             output,
+            case_sensitive_strings,
         } => {
             let table_from_sql = extract_table_name(&sql).map_err(|err| err.to_string())?;
             let chosen_sheet = sheet.or(table_from_sql);
 
             let source = create_excel_source(&file, chosen_sheet.as_deref()).map_err(|err| err.to_string())?;
-            let engine = SqlLikeQueryEngine;
+            let engine = SqlLikeQueryEngine.with_case_sensitive_strings(case_sensitive_strings);
             let mut execution = engine
                 .execute_with_schema(source.as_ref(), &sql)
                 .map_err(|err| err.to_string())?;

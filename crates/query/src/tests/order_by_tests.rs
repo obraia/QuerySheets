@@ -49,6 +49,29 @@ fn executes_order_by_string_case_insensitive() {
 }
 
 #[test]
+fn executes_order_by_string_case_sensitive_when_enabled() {
+    let source = MockSource {
+        schema: Schema::new(vec![Column::new("name")]),
+        rows: vec![
+            Row::new(vec![Value::String("apple".into())]),
+            Row::new(vec![Value::String("Zebra".into())]),
+            Row::new(vec![Value::String("maria".into())]),
+        ],
+    };
+
+    let engine = SqlLikeQueryEngine.with_case_sensitive_strings(true);
+    let result = engine
+        .execute(&source, "SELECT name FROM planilha ORDER BY name ASC")
+        .expect("query should execute")
+        .collect::<Vec<_>>();
+
+    assert_eq!(result.len(), 3);
+    assert_eq!(result[0].values, vec![Value::String("Zebra".into())]);
+    assert_eq!(result[1].values, vec![Value::String("apple".into())]);
+    assert_eq!(result[2].values, vec![Value::String("maria".into())]);
+}
+
+#[test]
 fn executes_select_with_order_by_non_projected_column() {
     let source = MockSource {
         schema: Schema::new(vec![Column::new("name"), Column::new("age")]),

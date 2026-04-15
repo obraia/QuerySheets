@@ -18,6 +18,22 @@ use expr::eval_predicate;
 use ordering::{apply_order_by_to_execution, execute_select_with_order_by};
 use projection::{build_projection, project_row};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StringComparisonMode {
+    CaseInsensitive,
+    CaseSensitive,
+}
+
+impl StringComparisonMode {
+    fn from_case_sensitive(case_sensitive: bool) -> Self {
+        if case_sensitive {
+            Self::CaseSensitive
+        } else {
+            Self::CaseInsensitive
+        }
+    }
+}
+
 pub trait QueryEngine {
     fn execute_with_schema<'a>(
         &self,
@@ -37,6 +53,24 @@ pub trait QueryEngine {
 #[derive(Debug, Default)]
 pub struct SqlLikeQueryEngine;
 
+#[derive(Debug, Clone, Copy)]
+pub struct ConfiguredSqlLikeQueryEngine {
+    string_comparison_mode: StringComparisonMode,
+}
+
+impl SqlLikeQueryEngine {
+    pub fn with_case_sensitive_strings(
+        self,
+        case_sensitive_strings: bool,
+    ) -> ConfiguredSqlLikeQueryEngine {
+        ConfiguredSqlLikeQueryEngine {
+            string_comparison_mode: StringComparisonMode::from_case_sensitive(
+                case_sensitive_strings,
+            ),
+        }
+    }
+}
+
 pub struct QueryExecution<'a> {
     pub schema: Schema,
     pub rows: Box<dyn Iterator<Item = Row> + 'a>,
@@ -48,57 +82,82 @@ impl QueryEngine for SqlLikeQueryEngine {
         source: &'a dyn DataSource,
         query: &str,
     ) -> Result<QueryExecution<'a>, QueryError> {
-        let parsed_query = parser::parse_select(query)?;
-        let schema = source.schema().clone();
-
-        if let Some(group_by_columns) =
-            extract_group_by_column_indexes(&schema, &parsed_query.select.group_by)?
-        {
-            let plan =
-                build_group_by_aggregation_plan(&schema, &parsed_query.select.projection, &group_by_columns)?;
-            let mut execution =
-                execute_group_by_aggregation(source, &schema, parsed_query.select.selection.as_ref(), plan)?;
-            execution = apply_order_by_to_execution(execution, &parsed_query.order_by)?;
-            execution = apply_pagination_to_execution(execution, parsed_query.pagination);
-            return Ok(execution);
-        }
-
-        let (projection, projected_schema) = build_projection(&schema, &parsed_query.select.projection)?;
-        let where_expr = parsed_query.select.selection;
-
-        let mut execution = if parsed_query.order_by.is_empty() {
-            let iter = source.scan().filter_map(move |row| {
-                if let Some(expr) = &where_expr {
-                    let keep = eval_predicate(expr, &row, &schema).unwrap_or(false);
-                    if !keep {
-                        return None;
-                    }
-                }
-
-                let values = project_row(&projection, &row, &schema);
-
-                Some(Row::new(values))
-            });
-
-            QueryExecution {
-                schema: projected_schema,
-                rows: Box::new(iter),
-            }
-        } else {
-            execute_select_with_order_by(
-                source,
-                &schema,
-                where_expr.as_ref(),
-                &projection,
-                projected_schema,
-                &parsed_query.order_by,
-            )?
-        };
-
-        execution = apply_pagination_to_execution(execution, parsed_query.pagination);
-
-        Ok(execution)
+        execute_with_string_mode(source, query, StringComparisonMode::CaseInsensitive)
     }
+}
+
+impl QueryEngine for ConfiguredSqlLikeQueryEngine {
+    fn execute_with_schema<'a>(
+        &self,
+        source: &'a dyn DataSource,
+        query: &str,
+    ) -> Result<QueryExecution<'a>, QueryError> {
+        execute_with_string_mode(source, query, self.string_comparison_mode)
+    }
+}
+
+fn execute_with_string_mode<'a>(
+    source: &'a dyn DataSource,
+    query: &str,
+    string_comparison_mode: StringComparisonMode,
+) -> Result<QueryExecution<'a>, QueryError> {
+    let parsed_query = parser::parse_select(query)?;
+    let schema = source.schema().clone();
+
+    if let Some(group_by_columns) =
+        extract_group_by_column_indexes(&schema, &parsed_query.select.group_by)?
+    {
+        let plan =
+            build_group_by_aggregation_plan(&schema, &parsed_query.select.projection, &group_by_columns)?;
+        let mut execution = execute_group_by_aggregation(
+            source,
+            &schema,
+            parsed_query.select.selection.as_ref(),
+            plan,
+            string_comparison_mode,
+        )?;
+        execution = apply_order_by_to_execution(execution, &parsed_query.order_by, string_comparison_mode)?;
+        execution = apply_pagination_to_execution(execution, parsed_query.pagination);
+        return Ok(execution);
+    }
+
+    let (projection, projected_schema) = build_projection(&schema, &parsed_query.select.projection)?;
+    let where_expr = parsed_query.select.selection;
+
+    let mut execution = if parsed_query.order_by.is_empty() {
+        let iter = source.scan().filter_map(move |row| {
+            if let Some(expr) = &where_expr {
+                let keep = eval_predicate(expr, &row, &schema, string_comparison_mode)
+                    .unwrap_or(false);
+                if !keep {
+                    return None;
+                }
+            }
+
+            let values = project_row(&projection, &row, &schema);
+
+            Some(Row::new(values))
+        });
+
+        QueryExecution {
+            schema: projected_schema,
+            rows: Box::new(iter),
+        }
+    } else {
+        execute_select_with_order_by(
+            source,
+            &schema,
+            where_expr.as_ref(),
+            &projection,
+            projected_schema,
+            &parsed_query.order_by,
+            string_comparison_mode,
+        )?
+    };
+
+    execution = apply_pagination_to_execution(execution, parsed_query.pagination);
+
+    Ok(execution)
 }
 
 fn apply_pagination_to_execution<'a>(

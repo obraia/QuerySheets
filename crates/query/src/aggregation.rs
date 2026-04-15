@@ -2,7 +2,7 @@ use crate::expr::{
     eval_predicate, eval_value, is_supported_cast_data_type, resolve_column, resolve_compound_column,
 };
 use crate::projection::projection_output_name;
-use crate::{QueryError, QueryExecution};
+use crate::{QueryError, QueryExecution, StringComparisonMode};
 use query_sheets_core::{Column, DataSource, Row, Schema, Value};
 use sqlparser::ast::{
     BinaryOperator, Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments, GroupByExpr,
@@ -137,6 +137,7 @@ pub(crate) fn execute_group_by_aggregation<'a>(
     schema: &Schema,
     where_expr: Option<&Expr>,
     plan: GroupByAggregationPlan,
+    string_comparison_mode: StringComparisonMode,
 ) -> Result<QueryExecution<'a>, QueryError> {
     let GroupByAggregationPlan {
         key_column_indexes,
@@ -148,7 +149,8 @@ pub(crate) fn execute_group_by_aggregation<'a>(
 
     for row in source.scan() {
         if let Some(expr) = where_expr {
-            let keep = eval_predicate(expr, &row, schema).unwrap_or(false);
+            let keep = eval_predicate(expr, &row, schema, string_comparison_mode)
+                .unwrap_or(false);
             if !keep {
                 continue;
             }
