@@ -1,4 +1,5 @@
 use crate::QueryError;
+use crate::text::compare_text_case_insensitive;
 use query_sheets_core::{Row, Schema, Value};
 use sqlparser::ast::{BinaryOperator, DataType, Expr, Ident, UnaryOperator, Value as SqlValue};
 
@@ -195,7 +196,9 @@ fn compare_values(op: &BinaryOperator, left: &Value, right: &Value) -> Result<bo
                 .ok_or_else(|| QueryError::UnsupportedWhere(format!("{} {} {}", a, op, b)))?;
             Ok(compare_ordering(op, ordering))
         }
-        (Value::String(a), Value::String(b)) => Ok(compare_ordering(op, a.cmp(b))),
+        (Value::String(a), Value::String(b)) => {
+            Ok(compare_ordering(op, compare_text_case_insensitive(a, b)))
+        }
         (Value::Bool(a), Value::Bool(b)) => Ok(compare_ordering(op, a.cmp(b))),
         (Value::Null, Value::Null) => Ok(matches!(op, BinaryOperator::Eq | BinaryOperator::GtEq | BinaryOperator::LtEq)),
         _ => Err(QueryError::UnsupportedWhere(format!("cannot compare '{left:?}' and '{right:?}'"))),

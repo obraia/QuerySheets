@@ -21,6 +21,8 @@ Implemented today:
 - Conversion expressions via `CAST(... AS ...)`
 - Projected schema support (used by CLI header output)
 - Aggregations with `GROUP BY` using `COUNT(*)`, `SUM(column)`, `AVG(column)`, `MIN(column)`, and `MAX(column)`
+- Ordering with `ORDER BY` (`ASC`/`DESC`, optional `NULLS FIRST`/`NULLS LAST`)
+- Pagination with `LIMIT` and `OFFSET`
 - CLI with `query` command, `--sheet`, and `--header`
 - CSV/JSON/JSONL export inferred from `--output` extension (`.csv`, `.json`, `.jsonl`)
 - Integration tests with generated `.xlsx` fixtures
@@ -150,6 +152,24 @@ cargo run -p query-sheets-cli -- query \
   --header
 ```
 
+Paginate query result with `LIMIT` and `OFFSET`:
+
+```bash
+cargo run -p query-sheets-cli -- query \
+  --file ./planilha.xlsx \
+  --sql "SELECT CustomerId, CustomerName FROM Customers LIMIT 10 OFFSET 20" \
+  --header
+```
+
+Sort and paginate:
+
+```bash
+cargo run -p query-sheets-cli -- query \
+  --file ./planilha.xlsx \
+  --sql "SELECT CustomerId, CustomerName FROM Customers ORDER BY CustomerName DESC LIMIT 10 OFFSET 0" \
+  --header
+```
+
 ## SQL Support (Current)
 
 Supported:
@@ -163,6 +183,9 @@ Supported:
   - aliases (`AS`)
   - simple arithmetic expressions in projection
   - conversion with `CAST(expression AS type)`
+- String comparison semantics:
+  - string comparisons in `WHERE` are case-insensitive
+  - string sorting in `ORDER BY` is case-insensitive
 - Aggregation:
   - `GROUP BY` with grouped columns in projection
   - `COUNT(*)`
@@ -171,12 +194,20 @@ Supported:
   - `MIN(column)`
   - `MAX(column)`
   - aggregate arguments can use casted expressions, e.g. `AVG(CAST(Tempo AS FLOAT))`
+- Pagination:
+  - `LIMIT <positive integer>`
+  - `OFFSET <non-negative integer>`
+- Ordering:
+  - `ORDER BY` with one or more expressions
+  - `ASC` / `DESC`
+  - optional `NULLS FIRST` / `NULLS LAST`
+  - positional ordering by projected columns (e.g. `ORDER BY 1, 2 DESC`)
+  - in non-aggregated queries, `ORDER BY` can reference columns not present in `SELECT`
 
 Not supported yet:
 - joins
 - subqueries
 - additional aggregate functions (`COUNT(column)`, `STDDEV`, etc.)
-- ordering and pagination
 
 ## Testing
 
@@ -225,6 +256,24 @@ Phase 4:
 ## Documentation Changelog
 
 Use this section to keep documentation changes visible over time.
+
+- 2026-04-15
+  - Changed string comparison behavior to case-insensitive in `WHERE` and `ORDER BY`.
+  - Added ASCII fast-path comparator with Unicode fallback to preserve performance.
+
+- 2026-04-15
+  - Extended `ORDER BY` support with positional indexes (e.g. `ORDER BY 1, 2 DESC`).
+  - In non-aggregated queries, `ORDER BY` now supports columns not projected in `SELECT`.
+  - Added query engine and CLI integration tests covering both new ordering behaviors.
+
+- 2026-04-15
+  - Added SQL ordering support with `ORDER BY` (`ASC`/`DESC`, optional `NULLS FIRST`/`NULLS LAST`).
+  - Added query engine unit tests and CLI integration tests for ORDER BY success and error scenarios.
+  - Applied SQL execution order: ORDER BY before LIMIT/OFFSET.
+
+- 2026-04-15
+  - Added SQL pagination support with `LIMIT` and `OFFSET`.
+  - Added query engine unit tests and CLI integration tests for pagination success and invalid pagination clauses.
 
 - 2026-04-15
   - Implemented Phase 2 start: CSV/JSON/JSONL export in CLI via `--output` extension inference.
