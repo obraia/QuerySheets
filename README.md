@@ -20,11 +20,11 @@ Implemented today:
 - Simple arithmetic expressions in projection (`+`, `-`, `*`, `/`, `%`)
 - Projected schema support (used by CLI header output)
 - CLI with `query` command, `--sheet`, and `--header`
+- CSV/JSON export inferred from `--output` extension (`.csv` or `.json`)
 - Integration tests with generated `.xlsx` fixtures
 
 Not implemented yet:
 - Aggregations (`GROUP BY`, `COUNT`, `SUM`, etc.)
-- CSV/JSON export
 - Node bindings (`napi-rs`)
 - Parallel execution
 - Custom Excel parser
@@ -111,6 +111,24 @@ cargo run -p query-sheets-cli -- query \
   --header
 ```
 
+Export result to CSV:
+
+```bash
+cargo run -p query-sheets-cli -- query \
+  --file ./planilha.xlsx \
+  --sql "SELECT CustomerId, CustomerName, AccountStatus FROM Customers" \
+  --output ./customers_export.csv
+```
+
+Export result to JSON:
+
+```bash
+cargo run -p query-sheets-cli -- query \
+  --file ./planilha.xlsx \
+  --sql "SELECT CustomerId AS ClientId, 1 + 2 AS PriorityScore FROM Customers" \
+  --output ./customers_export.json
+```
+
 Force worksheet selection (overrides `FROM` sheet name):
 
 ```bash
@@ -169,7 +187,7 @@ Phase 1 (in progress):
 
 Phase 2:
 - Aggregations (`GROUP BY`)
-- CSV/JSON export
+- export improvements (streaming JSON writer, format options)
 
 Phase 3:
 - Node bindings
@@ -187,6 +205,10 @@ Phase 4:
 ## Documentation Changelog
 
 Use this section to keep documentation changes visible over time.
+
+- 2026-04-15
+  - Implemented Phase 2 start: CSV/JSON export in CLI via `--output` extension inference.
+  - Added integration tests for export success paths and output extension validation.
 
 - 2026-04-15
   - Added baseline public-facing README structure.

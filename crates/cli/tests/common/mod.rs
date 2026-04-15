@@ -92,3 +92,27 @@ pub fn run_cli_query(
     let stdout = String::from_utf8(assert.get_output().stdout.clone())?;
     Ok(stdout)
 }
+
+pub fn run_cli_export(
+    file: &Path,
+    sql: &str,
+    sheet: Option<&str>,
+    output_path: &Path,
+) -> Result<(), Box<dyn Error>> {
+    let mut command = Command::cargo_bin("query-sheets")?;
+    command
+        .arg("query")
+        .arg("--file")
+        .arg(file)
+        .arg("--sql")
+        .arg(sql)
+        .arg("--output")
+        .arg(output_path);
+
+    if let Some(sheet_name) = sheet {
+        command.arg("--sheet").arg(sheet_name);
+    }
+
+    command.assert().success();
+    Ok(())
+}

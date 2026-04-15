@@ -50,3 +50,53 @@ fn query_returns_error_for_unknown_sheet_flag() -> Result<(), Box<dyn Error>> {
 
     Ok(())
 }
+
+#[test]
+fn query_returns_error_for_unsupported_output_extension() -> Result<(), Box<dyn Error>> {
+    let tmp = tempdir()?;
+    let fixture = tmp.path().join("customers.xlsx");
+    let output = tmp.path().join("output.txt");
+    create_customers_fixture(&fixture)?;
+
+    let mut command = Command::cargo_bin("query-sheets")?;
+    let assert = command
+        .arg("query")
+        .arg("--file")
+        .arg(&fixture)
+        .arg("--sql")
+        .arg("SELECT CustomerId FROM Customers")
+        .arg("--output")
+        .arg(&output)
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+    assert!(stderr.contains("unsupported output extension"));
+
+    Ok(())
+}
+
+#[test]
+fn query_returns_error_for_output_without_extension() -> Result<(), Box<dyn Error>> {
+    let tmp = tempdir()?;
+    let fixture = tmp.path().join("customers.xlsx");
+    let output = tmp.path().join("output_without_extension");
+    create_customers_fixture(&fixture)?;
+
+    let mut command = Command::cargo_bin("query-sheets")?;
+    let assert = command
+        .arg("query")
+        .arg("--file")
+        .arg(&fixture)
+        .arg("--sql")
+        .arg("SELECT CustomerId FROM Customers")
+        .arg("--output")
+        .arg(&output)
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+    assert!(stderr.contains("could not detect export format"));
+
+    Ok(())
+}
