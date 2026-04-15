@@ -19,13 +19,13 @@ Implemented today:
 - Projection aliases in `SELECT ... AS ...`
 - Simple arithmetic expressions in projection (`+`, `-`, `*`, `/`, `%`)
 - Projected schema support (used by CLI header output)
-- First aggregation slice: `GROUP BY` + `COUNT(*)`
+- Aggregations with `GROUP BY` using `COUNT(*)`, `SUM(column)`, and `AVG(column)`
 - CLI with `query` command, `--sheet`, and `--header`
 - CSV/JSON/JSONL export inferred from `--output` extension (`.csv`, `.json`, `.jsonl`)
 - Integration tests with generated `.xlsx` fixtures
 
 Not implemented yet:
-- Additional aggregations (`SUM`, `AVG`, `MIN`, `MAX`, etc.)
+- Additional aggregations (`MIN`, `MAX`, etc.)
 - Node bindings (`napi-rs`)
 - Parallel execution
 - Custom Excel parser
@@ -161,12 +161,16 @@ Supported:
   - wildcard (`*`)
   - aliases (`AS`)
   - simple arithmetic expressions in projection
+- Aggregation:
+  - `GROUP BY` with grouped columns in projection
+  - `COUNT(*)`
+  - `SUM(column)`
+  - `AVG(column)`
 
 Not supported yet:
 - joins
 - subqueries
-- `GROUP BY`
-- aggregate functions
+- additional aggregate functions (`MIN`, `MAX`, etc.)
 - ordering and pagination
 
 ## Testing
@@ -196,7 +200,7 @@ Phase 1 (in progress):
 - `SELECT` + `WHERE`
 
 Phase 2:
-- Aggregations (`GROUP BY`) - first slice (`COUNT(*)`) implemented
+- Aggregations (`GROUP BY`) - current support: `COUNT(*)`, `SUM(column)`, `AVG(column)`
 - export improvements (format options)
 
 Phase 3:
@@ -221,6 +225,11 @@ Use this section to keep documentation changes visible over time.
   - Added integration tests for export success paths and output extension validation.
   - Implemented streaming JSON array serialization to reduce memory peak on large outputs.
   - Implemented first aggregation slice: `GROUP BY` + `COUNT(*)` in query engine and CLI integration tests.
+
+- 2026-04-15
+  - Extended `GROUP BY` aggregation support with `SUM(column)` and `AVG(column)`.
+  - Added query engine unit tests and CLI integration tests for `COUNT(*) + SUM + AVG`.
+  - Added error coverage for aggregate usage on non-numeric columns.
 
 - 2026-04-15
   - Added baseline public-facing README structure.

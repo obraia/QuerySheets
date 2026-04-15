@@ -1,6 +1,6 @@
 mod common;
 
-use common::{create_customers_fixture, run_cli_query};
+use common::{create_customers_fixture, create_sales_fixture, run_cli_query};
 use std::error::Error;
 use tempfile::tempdir;
 
@@ -71,6 +71,25 @@ fn query_outputs_group_by_count_header_and_rows() -> Result<(), Box<dyn Error>> 
     assert_eq!(lines[0], "Segment\tTotalCustomers");
     assert_eq!(lines[1], "Enterprise\t2");
     assert_eq!(lines[2], "SMB\t1");
+
+    Ok(())
+}
+
+#[test]
+fn query_outputs_group_by_count_sum_avg_header_and_rows() -> Result<(), Box<dyn Error>> {
+    let tmp = tempdir()?;
+    let fixture = tmp.path().join("sales.xlsx");
+    create_sales_fixture(&fixture)?;
+
+    let sql =
+        "SELECT Segment, COUNT(*) AS TotalRows, SUM(Revenue) AS TotalRevenue, AVG(Revenue) AS AvgRevenue FROM Sales GROUP BY Segment";
+    let stdout = run_cli_query(&fixture, sql, None, true)?;
+    let lines = stdout.lines().collect::<Vec<_>>();
+
+    assert_eq!(lines.len(), 3);
+    assert_eq!(lines[0], "Segment\tTotalRows\tTotalRevenue\tAvgRevenue");
+    assert_eq!(lines[1], "Enterprise\t2\t211\t105.5");
+    assert_eq!(lines[2], "SMB\t1\t50\t50");
 
     Ok(())
 }

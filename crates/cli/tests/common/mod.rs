@@ -33,6 +33,27 @@ pub fn create_customers_fixture(path: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+pub fn create_sales_fixture(path: &Path) -> Result<(), Box<dyn Error>> {
+    let mut workbook = Workbook::new();
+    let worksheet = workbook.add_worksheet();
+    worksheet.set_name("Sales")?;
+
+    worksheet.write_string(0, 0, "Segment")?;
+    worksheet.write_string(0, 1, "Revenue")?;
+
+    worksheet.write_string(1, 0, "Enterprise")?;
+    worksheet.write_number(1, 1, 120.0)?;
+
+    worksheet.write_string(2, 0, "Enterprise")?;
+    worksheet.write_number(2, 1, 91.0)?;
+
+    worksheet.write_string(3, 0, "SMB")?;
+    worksheet.write_number(3, 1, 50.0)?;
+
+    workbook.save(path)?;
+    Ok(())
+}
+
 pub fn create_multi_sheet_customers_fixture(path: &Path) -> Result<(), Box<dyn Error>> {
     let mut workbook = Workbook::new();
 

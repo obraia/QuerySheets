@@ -10,7 +10,7 @@ pub use errors::QueryError;
 pub use parser::extract_table_name;
 
 use aggregation::{
-    build_group_by_count_plan, execute_group_by_count, extract_group_by_column_indexes,
+    build_group_by_aggregation_plan, execute_group_by_aggregation, extract_group_by_column_indexes,
 };
 use expr::eval_predicate;
 use projection::{build_projection, project_row};
@@ -49,8 +49,9 @@ impl QueryEngine for SqlLikeQueryEngine {
         let schema = source.schema().clone();
 
         if let Some(group_by_columns) = extract_group_by_column_indexes(&schema, &parsed_select.group_by)? {
-            let plan = build_group_by_count_plan(&schema, &parsed_select.projection, &group_by_columns)?;
-            return execute_group_by_count(source, &schema, parsed_select.selection.as_ref(), plan);
+            let plan =
+                build_group_by_aggregation_plan(&schema, &parsed_select.projection, &group_by_columns)?;
+            return execute_group_by_aggregation(source, &schema, parsed_select.selection.as_ref(), plan);
         }
 
         let (projection, projected_schema) = build_projection(&schema, &parsed_select.projection)?;
@@ -209,6 +210,86 @@ mod tests {
             vec![Value::String("Enterprise".into()), Value::Int(2)]
         );
         assert_eq!(rows[1].values, vec![Value::String("SMB".into()), Value::Int(1)]);
+    }
+
+    #[test]
+    fn executes_group_by_with_count_sum_and_avg() {
+        let source = MockSource {
+            schema: Schema::new(vec![Column::new("segment"), Column::new("revenue")]),
+            rows: vec![
+                Row::new(vec![Value::String("Enterprise".into()), Value::Int(120)]),
+                Row::new(vec![Value::String("Enterprise".into()), Value::Int(91)]),
+                Row::new(vec![Value::String("SMB".into()), Value::Int(50)]),
+            ],
+        };
+
+        let engine = SqlLikeQueryEngine;
+        let execution = engine
+            .execute_with_schema(
+                &source,
+                "SELECT segment, COUNT(*) AS total_customers, SUM(revenue) AS total_revenue, AVG(revenue) AS avg_revenue FROM planilha GROUP BY segment",
+            )
+            .expect("query should execute");
+
+        let header = execution
+            .schema
+            .columns
+            .iter()
+            .map(|column| column.name.clone())
+            .collect::<Vec<_>>();
+        let rows = execution.rows.collect::<Vec<_>>();
+
+        assert_eq!(header, vec!["segment", "total_customers", "total_revenue", "avg_revenue"]);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0].values,
+            vec![
+                Value::String("Enterprise".into()),
+                Value::Int(2),
+                Value::Int(211),
+                Value::Float(105.5),
+            ]
+        );
+        assert_eq!(
+            rows[1].values,
+            vec![
+                Value::String("SMB".into()),
+                Value::Int(1),
+                Value::Int(50),
+                Value::Float(50.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn returns_error_when_sum_targets_non_numeric_column() {
+        let source = MockSource {
+            schema: Schema::new(vec![Column::new("segment"), Column::new("name")]),
+            rows: vec![
+                Row::new(vec![
+                    Value::String("Enterprise".into()),
+                    Value::String("ana".into()),
+                ]),
+                Row::new(vec![Value::String("SMB".into()), Value::String("bia".into())]),
+            ],
+        };
+
+        let engine = SqlLikeQueryEngine;
+        let err = match engine.execute(
+            &source,
+            "SELECT segment, SUM(name) FROM planilha GROUP BY segment",
+        ) {
+            Ok(_) => panic!("query should fail"),
+            Err(err) => err,
+        };
+
+        match err {
+            QueryError::UnsupportedSelect(message) => {
+                assert!(message.contains("SUM(name)"));
+                assert!(message.contains("numeric"));
+            }
+            other => panic!("expected UnsupportedSelect error, got {other:?}"),
+        }
     }
 
     #[test]

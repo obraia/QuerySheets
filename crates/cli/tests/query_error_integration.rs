@@ -100,3 +100,26 @@ fn query_returns_error_for_output_without_extension() -> Result<(), Box<dyn Erro
 
     Ok(())
 }
+
+#[test]
+fn query_returns_error_for_sum_on_non_numeric_column() -> Result<(), Box<dyn Error>> {
+    let tmp = tempdir()?;
+    let fixture = tmp.path().join("customers.xlsx");
+    create_customers_fixture(&fixture)?;
+
+    let mut command = Command::cargo_bin("query-sheets")?;
+    let assert = command
+        .arg("query")
+        .arg("--file")
+        .arg(&fixture)
+        .arg("--sql")
+        .arg("SELECT Segment, SUM(CustomerName) AS Total FROM Customers GROUP BY Segment")
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+    assert!(stderr.contains("SUM(CustomerName)"));
+    assert!(stderr.contains("numeric values"));
+
+    Ok(())
+}
