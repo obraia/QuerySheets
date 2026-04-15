@@ -262,6 +262,45 @@ mod tests {
     }
 
     #[test]
+    fn executes_group_by_with_min_and_max() {
+        let source = MockSource {
+            schema: Schema::new(vec![Column::new("segment"), Column::new("revenue")]),
+            rows: vec![
+                Row::new(vec![Value::String("Enterprise".into()), Value::Int(120)]),
+                Row::new(vec![Value::String("Enterprise".into()), Value::Int(91)]),
+                Row::new(vec![Value::String("SMB".into()), Value::Int(50)]),
+            ],
+        };
+
+        let engine = SqlLikeQueryEngine;
+        let execution = engine
+            .execute_with_schema(
+                &source,
+                "SELECT segment, MIN(revenue) AS min_revenue, MAX(revenue) AS max_revenue FROM planilha GROUP BY segment",
+            )
+            .expect("query should execute");
+
+        let header = execution
+            .schema
+            .columns
+            .iter()
+            .map(|column| column.name.clone())
+            .collect::<Vec<_>>();
+        let rows = execution.rows.collect::<Vec<_>>();
+
+        assert_eq!(header, vec!["segment", "min_revenue", "max_revenue"]);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0].values,
+            vec![Value::String("Enterprise".into()), Value::Int(91), Value::Int(120)]
+        );
+        assert_eq!(
+            rows[1].values,
+            vec![Value::String("SMB".into()), Value::Int(50), Value::Int(50)]
+        );
+    }
+
+    #[test]
     fn returns_error_when_sum_targets_non_numeric_column() {
         let source = MockSource {
             schema: Schema::new(vec![Column::new("segment"), Column::new("name")]),
@@ -287,6 +326,37 @@ mod tests {
             QueryError::UnsupportedSelect(message) => {
                 assert!(message.contains("SUM(name)"));
                 assert!(message.contains("numeric"));
+            }
+            other => panic!("expected UnsupportedSelect error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn returns_error_when_min_targets_mixed_incomparable_values() {
+        let source = MockSource {
+            schema: Schema::new(vec![Column::new("segment"), Column::new("value")]),
+            rows: vec![
+                Row::new(vec![Value::String("Enterprise".into()), Value::Int(120)]),
+                Row::new(vec![
+                    Value::String("Enterprise".into()),
+                    Value::String("outlier".into()),
+                ]),
+            ],
+        };
+
+        let engine = SqlLikeQueryEngine;
+        let err = match engine.execute(
+            &source,
+            "SELECT segment, MIN(value) FROM planilha GROUP BY segment",
+        ) {
+            Ok(_) => panic!("query should fail"),
+            Err(err) => err,
+        };
+
+        match err {
+            QueryError::UnsupportedSelect(message) => {
+                assert!(message.contains("MIN(value)"));
+                assert!(message.contains("comparable values"));
             }
             other => panic!("expected UnsupportedSelect error, got {other:?}"),
         }

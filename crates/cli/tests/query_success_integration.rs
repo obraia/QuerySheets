@@ -93,3 +93,22 @@ fn query_outputs_group_by_count_sum_avg_header_and_rows() -> Result<(), Box<dyn 
 
     Ok(())
 }
+
+#[test]
+fn query_outputs_group_by_min_max_header_and_rows() -> Result<(), Box<dyn Error>> {
+    let tmp = tempdir()?;
+    let fixture = tmp.path().join("sales.xlsx");
+    create_sales_fixture(&fixture)?;
+
+    let sql =
+        "SELECT Segment, MIN(Revenue) AS MinRevenue, MAX(Revenue) AS MaxRevenue FROM Sales GROUP BY Segment";
+    let stdout = run_cli_query(&fixture, sql, None, true)?;
+    let lines = stdout.lines().collect::<Vec<_>>();
+
+    assert_eq!(lines.len(), 3);
+    assert_eq!(lines[0], "Segment\tMinRevenue\tMaxRevenue");
+    assert_eq!(lines[1], "Enterprise\t91\t120");
+    assert_eq!(lines[2], "SMB\t50\t50");
+
+    Ok(())
+}

@@ -18,6 +18,14 @@ pub(crate) enum AggregationSelectItem {
         column_index: usize,
         expression: String,
     },
+    MinColumn {
+        column_index: usize,
+        expression: String,
+    },
+    MaxColumn {
+        column_index: usize,
+        expression: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -79,6 +87,8 @@ pub(crate) fn build_group_by_aggregation_plan(
                 if matches!(plan_item, AggregationSelectItem::CountRows)
                     || matches!(plan_item, AggregationSelectItem::SumColumn { .. })
                     || matches!(plan_item, AggregationSelectItem::AvgColumn { .. })
+                    || matches!(plan_item, AggregationSelectItem::MinColumn { .. })
+                    || matches!(plan_item, AggregationSelectItem::MaxColumn { .. })
                 {
                     has_aggregate = true;
                 }
@@ -91,6 +101,8 @@ pub(crate) fn build_group_by_aggregation_plan(
                 if matches!(plan_item, AggregationSelectItem::CountRows)
                     || matches!(plan_item, AggregationSelectItem::SumColumn { .. })
                     || matches!(plan_item, AggregationSelectItem::AvgColumn { .. })
+                    || matches!(plan_item, AggregationSelectItem::MinColumn { .. })
+                    || matches!(plan_item, AggregationSelectItem::MaxColumn { .. })
                 {
                     has_aggregate = true;
                 }
@@ -177,6 +189,14 @@ pub(crate) fn execute_group_by_aggregation<'a>(
                     AggregationSelectItem::AvgColumn { .. },
                     GroupAggregationState::Avg(avg_accumulator),
                 ) => avg_accumulator.to_value(),
+                (
+                    AggregationSelectItem::MinColumn { .. },
+                    GroupAggregationState::Min(min_accumulator),
+                ) => min_accumulator.to_value(),
+                (
+                    AggregationSelectItem::MaxColumn { .. },
+                    GroupAggregationState::Max(max_accumulator),
+                ) => max_accumulator.to_value(),
                 _ => Value::Null,
             })
             .collect::<Vec<_>>();
@@ -217,24 +237,27 @@ fn parse_group_select_expr(
                 return Ok(AggregationSelectItem::CountRows);
             }
 
-            if let Some(column_index) = parse_single_column_aggregate_argument(schema, function, expr)? {
-                let Some(function_name) = function.name.0.last() else {
-                    return Err(QueryError::UnsupportedSelect(expr.to_string()));
+            if let Some((aggregate_kind, column_index)) =
+                parse_single_column_aggregate_argument(schema, function, expr)?
+            {
+                return match aggregate_kind {
+                    AggregateFunctionKind::Sum => Ok(AggregationSelectItem::SumColumn {
+                        column_index,
+                        expression: expr.to_string(),
+                    }),
+                    AggregateFunctionKind::Avg => Ok(AggregationSelectItem::AvgColumn {
+                        column_index,
+                        expression: expr.to_string(),
+                    }),
+                    AggregateFunctionKind::Min => Ok(AggregationSelectItem::MinColumn {
+                        column_index,
+                        expression: expr.to_string(),
+                    }),
+                    AggregateFunctionKind::Max => Ok(AggregationSelectItem::MaxColumn {
+                        column_index,
+                        expression: expr.to_string(),
+                    }),
                 };
-
-                if function_name.value.eq_ignore_ascii_case("sum") {
-                    return Ok(AggregationSelectItem::SumColumn {
-                        column_index,
-                        expression: expr.to_string(),
-                    });
-                }
-
-                if function_name.value.eq_ignore_ascii_case("avg") {
-                    return Ok(AggregationSelectItem::AvgColumn {
-                        column_index,
-                        expression: expr.to_string(),
-                    });
-                }
             }
 
             Err(QueryError::UnsupportedSelect(expr.to_string()))
@@ -247,16 +270,22 @@ fn parse_single_column_aggregate_argument(
     schema: &Schema,
     function: &Function,
     original_expr: &Expr,
-) -> Result<Option<usize>, QueryError> {
+) -> Result<Option<(AggregateFunctionKind, usize)>, QueryError> {
     let Some(function_name) = function.name.0.last() else {
         return Ok(None);
     };
 
-    if !function_name.value.eq_ignore_ascii_case("sum")
-        && !function_name.value.eq_ignore_ascii_case("avg")
-    {
+    let aggregate_kind = if function_name.value.eq_ignore_ascii_case("sum") {
+        AggregateFunctionKind::Sum
+    } else if function_name.value.eq_ignore_ascii_case("avg") {
+        AggregateFunctionKind::Avg
+    } else if function_name.value.eq_ignore_ascii_case("min") {
+        AggregateFunctionKind::Min
+    } else if function_name.value.eq_ignore_ascii_case("max") {
+        AggregateFunctionKind::Max
+    } else {
         return Ok(None);
-    }
+    };
 
     if function.filter.is_some() || function.over.is_some() || !function.within_group.is_empty() {
         return Err(QueryError::UnsupportedSelect(original_expr.to_string()));
@@ -287,7 +316,15 @@ fn parse_single_column_aggregate_argument(
         _ => return Err(QueryError::UnsupportedSelect(original_expr.to_string())),
     };
 
-    Ok(Some(column_index))
+    Ok(Some((aggregate_kind, column_index)))
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AggregateFunctionKind {
+    Sum,
+    Avg,
+    Min,
+    Max,
 }
 
 fn is_count_star(function: &Function) -> bool {
@@ -336,6 +373,8 @@ enum GroupAggregationState {
     CountRows(i64),
     Sum(SumAccumulator),
     Avg(AvgAccumulator),
+    Min(MinMaxAccumulator),
+    Max(MinMaxAccumulator),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -395,6 +434,64 @@ struct AvgAccumulator {
     count: i64,
 }
 
+#[derive(Debug, Clone, Default)]
+struct MinMaxAccumulator {
+    current: Option<Value>,
+}
+
+impl MinMaxAccumulator {
+    fn add_value(&mut self, value: &Value, expression: &str, find_max: bool) -> Result<(), QueryError> {
+        if matches!(value, Value::Null) {
+            return Ok(());
+        }
+
+        let Some(current) = self.current.as_ref() else {
+            self.current = Some(value.clone());
+            return Ok(());
+        };
+
+        let ordering = compare_aggregate_values(current, value).map_err(|reason| {
+            QueryError::UnsupportedSelect(format!(
+                "{expression} requires comparable values, got {reason}"
+            ))
+        })?;
+
+        let should_replace = if find_max {
+            ordering == std::cmp::Ordering::Less
+        } else {
+            ordering == std::cmp::Ordering::Greater
+        };
+
+        if should_replace {
+            self.current = Some(value.clone());
+        }
+
+        Ok(())
+    }
+
+    fn to_value(&self) -> Value {
+        self.current.clone().unwrap_or(Value::Null)
+    }
+}
+
+fn compare_aggregate_values(left: &Value, right: &Value) -> Result<std::cmp::Ordering, String> {
+    match (left, right) {
+        (Value::Int(a), Value::Int(b)) => Ok(a.cmp(b)),
+        (Value::Float(a), Value::Float(b)) => a
+            .partial_cmp(b)
+            .ok_or_else(|| "NaN encountered in floating-point comparison".to_string()),
+        (Value::Int(a), Value::Float(b)) => (*a as f64)
+            .partial_cmp(b)
+            .ok_or_else(|| "NaN encountered in floating-point comparison".to_string()),
+        (Value::Float(a), Value::Int(b)) => a
+            .partial_cmp(&(*b as f64))
+            .ok_or_else(|| "NaN encountered in floating-point comparison".to_string()),
+        (Value::String(a), Value::String(b)) => Ok(a.cmp(b)),
+        (Value::Bool(a), Value::Bool(b)) => Ok(a.cmp(b)),
+        _ => Err(format!("'{left:?}' and '{right:?}' are not comparable")),
+    }
+}
+
 impl AvgAccumulator {
     fn add_value(&mut self, value: &Value, expression: &str) -> Result<(), QueryError> {
         match value {
@@ -436,6 +533,12 @@ fn initial_group_state(select_items: &[AggregationSelectItem]) -> Vec<GroupAggre
             AggregationSelectItem::AvgColumn { .. } => {
                 GroupAggregationState::Avg(AvgAccumulator::default())
             }
+            AggregationSelectItem::MinColumn { .. } => {
+                GroupAggregationState::Min(MinMaxAccumulator::default())
+            }
+            AggregationSelectItem::MaxColumn { .. } => {
+                GroupAggregationState::Max(MinMaxAccumulator::default())
+            }
         })
         .collect::<Vec<_>>()
 }
@@ -470,6 +573,26 @@ fn apply_row_to_group_state(
             ) => {
                 let value = row.values.get(*column_index).unwrap_or(&Value::Null);
                 avg_accumulator.add_value(value, expression)?;
+            }
+            (
+                AggregationSelectItem::MinColumn {
+                    column_index,
+                    expression,
+                },
+                GroupAggregationState::Min(min_accumulator),
+            ) => {
+                let value = row.values.get(*column_index).unwrap_or(&Value::Null);
+                min_accumulator.add_value(value, expression, false)?;
+            }
+            (
+                AggregationSelectItem::MaxColumn {
+                    column_index,
+                    expression,
+                },
+                GroupAggregationState::Max(max_accumulator),
+            ) => {
+                let value = row.values.get(*column_index).unwrap_or(&Value::Null);
+                max_accumulator.add_value(value, expression, true)?;
             }
             _ => {}
         }

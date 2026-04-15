@@ -19,13 +19,13 @@ Implemented today:
 - Projection aliases in `SELECT ... AS ...`
 - Simple arithmetic expressions in projection (`+`, `-`, `*`, `/`, `%`)
 - Projected schema support (used by CLI header output)
-- Aggregations with `GROUP BY` using `COUNT(*)`, `SUM(column)`, and `AVG(column)`
+- Aggregations with `GROUP BY` using `COUNT(*)`, `SUM(column)`, `AVG(column)`, `MIN(column)`, and `MAX(column)`
 - CLI with `query` command, `--sheet`, and `--header`
 - CSV/JSON/JSONL export inferred from `--output` extension (`.csv`, `.json`, `.jsonl`)
 - Integration tests with generated `.xlsx` fixtures
 
 Not implemented yet:
-- Additional aggregations (`MIN`, `MAX`, etc.)
+- Additional aggregations (`COUNT(column)`, `STDDEV`, etc.)
 - Node bindings (`napi-rs`)
 - Parallel execution
 - Custom Excel parser
@@ -166,11 +166,13 @@ Supported:
   - `COUNT(*)`
   - `SUM(column)`
   - `AVG(column)`
+  - `MIN(column)`
+  - `MAX(column)`
 
 Not supported yet:
 - joins
 - subqueries
-- additional aggregate functions (`MIN`, `MAX`, etc.)
+- additional aggregate functions (`COUNT(column)`, `STDDEV`, etc.)
 - ordering and pagination
 
 ## Testing
@@ -200,7 +202,7 @@ Phase 1 (in progress):
 - `SELECT` + `WHERE`
 
 Phase 2:
-- Aggregations (`GROUP BY`) - current support: `COUNT(*)`, `SUM(column)`, `AVG(column)`
+- Aggregations (`GROUP BY`) - current support: `COUNT(*)`, `SUM(column)`, `AVG(column)`, `MIN(column)`, `MAX(column)`
 - export improvements (format options)
 
 Phase 3:
@@ -230,6 +232,11 @@ Use this section to keep documentation changes visible over time.
   - Extended `GROUP BY` aggregation support with `SUM(column)` and `AVG(column)`.
   - Added query engine unit tests and CLI integration tests for `COUNT(*) + SUM + AVG`.
   - Added error coverage for aggregate usage on non-numeric columns.
+
+- 2026-04-15
+  - Extended `GROUP BY` aggregation support with `MIN(column)` and `MAX(column)`.
+  - Added query engine unit tests and CLI integration tests for `MIN/MAX` scenarios.
+  - Added error coverage for incomparable mixed-type values during aggregate comparison.
 
 - 2026-04-15
   - Added baseline public-facing README structure.
