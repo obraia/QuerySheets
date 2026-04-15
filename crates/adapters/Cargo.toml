@@ -1,0 +1,15 @@
+[package]
+name = "query-sheets-adapters"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["calamine"]
+calamine = ["dep:calamine"]
+custom_excel = []
+
+[dependencies]
+query-sheets-core = { path = "../core" }
+thiserror = { workspace = true }
+calamine = { workspace = true, optional = true }

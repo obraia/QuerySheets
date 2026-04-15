@@ -1,0 +1,10 @@
+[package]
+name = "query-sheets-query"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+query-sheets-core = { path = "../core" }
+sqlparser = { workspace = true }
+thiserror = { workspace = true }
