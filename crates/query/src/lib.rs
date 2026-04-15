@@ -1,7 +1,7 @@
 use query_sheets_core::{DataSource, Row, Schema, Value};
 use sqlparser::ast::{
     BinaryOperator, Expr, Ident, Query, Select, SelectItem, SetExpr, Statement, TableFactor,
-    Value as SqlValue,
+    UnaryOperator, Value as SqlValue,
 };
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
@@ -36,6 +36,12 @@ pub trait QueryEngine {
 #[derive(Debug, Default)]
 pub struct SqlLikeQueryEngine;
 
+#[derive(Debug, Clone)]
+enum ProjectionItem {
+    Wildcard,
+    Expr(Expr),
+}
+
 impl QueryEngine for SqlLikeQueryEngine {
     fn execute<'a>(
         &self,
@@ -55,10 +61,7 @@ impl QueryEngine for SqlLikeQueryEngine {
                 }
             }
 
-            let values = projection
-                .iter()
-                .map(|idx| row.values.get(*idx).cloned().unwrap_or(Value::Null))
-                .collect();
+            let values = project_row(&projection, &row, &schema);
 
             Some(Row::new(values))
         });
@@ -105,7 +108,10 @@ fn select_from_query(query: &Query) -> Result<Select, QueryError> {
     Ok((**select).clone())
 }
 
-fn build_projection(schema: &Schema, select_items: &[SelectItem]) -> Result<Vec<usize>, QueryError> {
+fn build_projection(
+    schema: &Schema,
+    select_items: &[SelectItem],
+) -> Result<Vec<ProjectionItem>, QueryError> {
     if select_items.is_empty() {
         return Err(QueryError::UnsupportedSelect("projection is empty".to_string()));
     }
@@ -115,16 +121,15 @@ fn build_projection(schema: &Schema, select_items: &[SelectItem]) -> Result<Vec<
     for item in select_items {
         match item {
             SelectItem::Wildcard(_) => {
-                projection.extend(0..schema.columns.len());
+                projection.push(ProjectionItem::Wildcard);
             }
-            SelectItem::UnnamedExpr(Expr::Identifier(identifier)) => {
-                projection.push(resolve_column(schema, identifier)?);
+            SelectItem::UnnamedExpr(expr) => {
+                validate_projection_expr(schema, expr)?;
+                projection.push(ProjectionItem::Expr(expr.clone()));
             }
-            SelectItem::ExprWithAlias {
-                expr: Expr::Identifier(identifier),
-                ..
-            } => {
-                projection.push(resolve_column(schema, identifier)?);
+            SelectItem::ExprWithAlias { expr, .. } => {
+                validate_projection_expr(schema, expr)?;
+                projection.push(ProjectionItem::Expr(expr.clone()));
             }
             other => {
                 return Err(QueryError::UnsupportedSelect(other.to_string()));
@@ -136,9 +141,72 @@ fn build_projection(schema: &Schema, select_items: &[SelectItem]) -> Result<Vec<
 }
 
 fn resolve_column(schema: &Schema, identifier: &Ident) -> Result<usize, QueryError> {
+    resolve_column_name(schema, &identifier.value)
+}
+
+fn resolve_column_name(schema: &Schema, column_name: &str) -> Result<usize, QueryError> {
     schema
-        .index_of(&identifier.value)
-        .ok_or_else(|| QueryError::ColumnNotFound(identifier.value.clone()))
+        .index_of(column_name)
+        .ok_or_else(|| QueryError::ColumnNotFound(column_name.to_string()))
+}
+
+fn resolve_compound_column(schema: &Schema, identifiers: &[Ident]) -> Result<usize, QueryError> {
+    let Some(last) = identifiers.last() else {
+        return Err(QueryError::ColumnNotFound("".to_string()));
+    };
+
+    resolve_column_name(schema, &last.value)
+}
+
+fn validate_projection_expr(schema: &Schema, expr: &Expr) -> Result<(), QueryError> {
+    match expr {
+        Expr::Identifier(identifier) => {
+            let _ = resolve_column(schema, identifier)?;
+            Ok(())
+        }
+        Expr::CompoundIdentifier(identifiers) => {
+            let _ = resolve_compound_column(schema, identifiers)?;
+            Ok(())
+        }
+        Expr::Value(value) => {
+            let _ = sql_literal_to_value(value).map_err(|_| QueryError::UnsupportedSelect(expr.to_string()))?;
+            Ok(())
+        }
+        Expr::Nested(inner) => validate_projection_expr(schema, inner),
+        Expr::UnaryOp { op, expr: inner } => match op {
+            UnaryOperator::Plus | UnaryOperator::Minus => validate_projection_expr(schema, inner),
+            _ => Err(QueryError::UnsupportedSelect(expr.to_string())),
+        },
+        Expr::BinaryOp { left, op, right } => {
+            if !matches!(
+                op,
+                BinaryOperator::Plus
+                    | BinaryOperator::Minus
+                    | BinaryOperator::Multiply
+                    | BinaryOperator::Divide
+                    | BinaryOperator::Modulo
+            ) {
+                return Err(QueryError::UnsupportedSelect(expr.to_string()));
+            }
+
+            validate_projection_expr(schema, left)?;
+            validate_projection_expr(schema, right)
+        }
+        _ => Err(QueryError::UnsupportedSelect(expr.to_string())),
+    }
+}
+
+fn project_row(projection: &[ProjectionItem], row: &Row, schema: &Schema) -> Vec<Value> {
+    let mut out = Vec::new();
+
+    for item in projection {
+        match item {
+            ProjectionItem::Wildcard => out.extend(row.values.iter().cloned()),
+            ProjectionItem::Expr(expr) => out.push(eval_value(expr, row, schema).unwrap_or(Value::Null)),
+        }
+    }
+
+    out
 }
 
 fn eval_predicate(expr: &Expr, row: &Row, schema: &Schema) -> Result<bool, QueryError> {
@@ -174,10 +242,93 @@ fn eval_value(expr: &Expr, row: &Row, schema: &Schema) -> Result<Value, QueryErr
             let idx = resolve_column(schema, identifier)?;
             Ok(row.values.get(idx).cloned().unwrap_or(Value::Null))
         }
+        Expr::CompoundIdentifier(identifiers) => {
+            let idx = resolve_compound_column(schema, identifiers)?;
+            Ok(row.values.get(idx).cloned().unwrap_or(Value::Null))
+        }
         Expr::Value(value) => sql_literal_to_value(value),
         Expr::Nested(inner) => eval_value(inner, row, schema),
+        Expr::UnaryOp { op, expr: inner } => {
+            let value = eval_value(inner, row, schema)?;
+            match (op, value) {
+                (UnaryOperator::Plus, Value::Int(v)) => Ok(Value::Int(v)),
+                (UnaryOperator::Plus, Value::Float(v)) => Ok(Value::Float(v)),
+                (UnaryOperator::Minus, Value::Int(v)) => Ok(Value::Int(-v)),
+                (UnaryOperator::Minus, Value::Float(v)) => Ok(Value::Float(-v)),
+                _ => Err(QueryError::UnsupportedWhere(expr.to_string())),
+            }
+        }
+        Expr::BinaryOp { left, op, right }
+            if matches!(
+                op,
+                BinaryOperator::Plus
+                    | BinaryOperator::Minus
+                    | BinaryOperator::Multiply
+                    | BinaryOperator::Divide
+                    | BinaryOperator::Modulo
+            ) =>
+        {
+            let left = eval_value(left, row, schema)?;
+            let right = eval_value(right, row, schema)?;
+            eval_arithmetic_value(op, left, right)
+        }
         _ => Err(QueryError::UnsupportedWhere(expr.to_string())),
     }
+}
+
+fn eval_arithmetic_value(op: &BinaryOperator, left: Value, right: Value) -> Result<Value, QueryError> {
+    match (left, right) {
+        (Value::Int(a), Value::Int(b)) => match op {
+            BinaryOperator::Plus => Ok(Value::Int(a + b)),
+            BinaryOperator::Minus => Ok(Value::Int(a - b)),
+            BinaryOperator::Multiply => Ok(Value::Int(a * b)),
+            BinaryOperator::Divide => {
+                if b == 0 {
+                    return Err(QueryError::UnsupportedWhere("division by zero".to_string()));
+                }
+
+                if a % b == 0 {
+                    Ok(Value::Int(a / b))
+                } else {
+                    Ok(Value::Float(a as f64 / b as f64))
+                }
+            }
+            BinaryOperator::Modulo => {
+                if b == 0 {
+                    return Err(QueryError::UnsupportedWhere("modulo by zero".to_string()));
+                }
+                Ok(Value::Int(a % b))
+            }
+            _ => Err(QueryError::UnsupportedWhere(op.to_string())),
+        },
+        (Value::Int(a), Value::Float(b)) => eval_arithmetic_float(op, a as f64, b),
+        (Value::Float(a), Value::Int(b)) => eval_arithmetic_float(op, a, b as f64),
+        (Value::Float(a), Value::Float(b)) => eval_arithmetic_float(op, a, b),
+        _ => Err(QueryError::UnsupportedWhere(format!("cannot evaluate arithmetic '{op}'"))),
+    }
+}
+
+fn eval_arithmetic_float(op: &BinaryOperator, left: f64, right: f64) -> Result<Value, QueryError> {
+    let value = match op {
+        BinaryOperator::Plus => left + right,
+        BinaryOperator::Minus => left - right,
+        BinaryOperator::Multiply => left * right,
+        BinaryOperator::Divide => {
+            if right == 0.0 {
+                return Err(QueryError::UnsupportedWhere("division by zero".to_string()));
+            }
+            left / right
+        }
+        BinaryOperator::Modulo => {
+            if right == 0.0 {
+                return Err(QueryError::UnsupportedWhere("modulo by zero".to_string()));
+            }
+            left % right
+        }
+        _ => return Err(QueryError::UnsupportedWhere(op.to_string())),
+    };
+
+    Ok(Value::Float(value))
 }
 
 fn sql_literal_to_value(value: &SqlValue) -> Result<Value, QueryError> {
@@ -284,5 +435,31 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].values, vec![Value::String("bia".into())]);
         assert_eq!(result[1].values, vec![Value::String("caio".into())]);
+    }
+
+    #[test]
+    fn executes_projection_with_alias_and_expression() {
+        let source = MockSource {
+            schema: Schema::new(vec![Column::new("name"), Column::new("age")]),
+            rows: vec![
+                Row::new(vec![Value::String("ana".into()), Value::Int(10)]),
+                Row::new(vec![Value::String("bia".into()), Value::Int(20)]),
+            ],
+        };
+
+        let engine = SqlLikeQueryEngine;
+        let result = engine
+            .execute(
+                &source,
+                "SELECT name AS pessoa, age + 5 AS idade_ajustada, 1 AS constante FROM planilha WHERE name = 'bia'",
+            )
+            .expect("query should execute")
+            .collect::<Vec<_>>();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0].values,
+            vec![Value::String("bia".into()), Value::Int(25), Value::Int(1)]
+        );
     }
 }
