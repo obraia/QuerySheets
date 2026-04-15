@@ -1,6 +1,8 @@
 mod common;
 
-use common::{create_customers_fixture, create_sales_fixture, run_cli_query};
+use common::{
+    create_activity_time_fixture, create_customers_fixture, create_sales_fixture, run_cli_query,
+};
 use std::error::Error;
 use tempfile::tempdir;
 
@@ -109,6 +111,27 @@ fn query_outputs_group_by_min_max_header_and_rows() -> Result<(), Box<dyn Error>
     assert_eq!(lines[0], "Segment\tMinRevenue\tMaxRevenue");
     assert_eq!(lines[1], "Enterprise\t91\t120");
     assert_eq!(lines[2], "SMB\t50\t50");
+
+    Ok(())
+}
+
+#[test]
+fn query_outputs_casted_group_by_aggregates_with_mixed_tempo_values() -> Result<(), Box<dyn Error>> {
+    let tmp = tempdir()?;
+    let fixture = tmp.path().join("times.xlsx");
+    create_activity_time_fixture(&fixture)?;
+
+    let sql = "SELECT Atividade, COUNT(*) AS Qtde, AVG(CAST(Tempo AS FLOAT)) AS TempoMedio, SUM(CAST(Tempo AS FLOAT)) AS TempoTotal, MIN(CAST(Tempo AS FLOAT)) AS TempoMinimo, MAX(CAST(Tempo AS FLOAT)) AS TempoMaximo FROM Times GROUP BY Atividade";
+    let stdout = run_cli_query(&fixture, sql, None, true)?;
+    let lines = stdout.lines().collect::<Vec<_>>();
+
+    assert_eq!(lines.len(), 3);
+    assert_eq!(
+        lines[0],
+        "Atividade\tQtde\tTempoMedio\tTempoTotal\tTempoMinimo\tTempoMaximo"
+    );
+    assert_eq!(lines[1], "A\t3\t15\t30\t10\t20");
+    assert_eq!(lines[2], "B\t2\t5.5\t5.5\t5.5\t5.5");
 
     Ok(())
 }

@@ -18,6 +18,7 @@ Implemented today:
 - SQL-like query execution for `SELECT` + `WHERE`
 - Projection aliases in `SELECT ... AS ...`
 - Simple arithmetic expressions in projection (`+`, `-`, `*`, `/`, `%`)
+- Conversion expressions via `CAST(... AS ...)`
 - Projected schema support (used by CLI header output)
 - Aggregations with `GROUP BY` using `COUNT(*)`, `SUM(column)`, `AVG(column)`, `MIN(column)`, and `MAX(column)`
 - CLI with `query` command, `--sheet`, and `--header`
@@ -161,6 +162,7 @@ Supported:
   - wildcard (`*`)
   - aliases (`AS`)
   - simple arithmetic expressions in projection
+  - conversion with `CAST(expression AS type)`
 - Aggregation:
   - `GROUP BY` with grouped columns in projection
   - `COUNT(*)`
@@ -168,6 +170,7 @@ Supported:
   - `AVG(column)`
   - `MIN(column)`
   - `MAX(column)`
+  - aggregate arguments can use casted expressions, e.g. `AVG(CAST(Tempo AS FLOAT))`
 
 Not supported yet:
 - joins
@@ -217,6 +220,7 @@ Phase 4:
 
 - The adapter currently uses `calamine`, with dependency fully isolated to adapter crate.
 - Current implementation is iterator-driven and avoids extra data copies in query pipeline, but full file-level streaming behavior still depends on adapter internals and future parser strategy.
+- CAST conversion is lenient for parsing failures (e.g., `CAST('-' AS FLOAT)` becomes `NULL`), which helps mixed Excel columns but differs from strict SQL engines.
 
 ## Documentation Changelog
 
@@ -237,6 +241,11 @@ Use this section to keep documentation changes visible over time.
   - Extended `GROUP BY` aggregation support with `MIN(column)` and `MAX(column)`.
   - Added query engine unit tests and CLI integration tests for `MIN/MAX` scenarios.
   - Added error coverage for incomparable mixed-type values during aggregate comparison.
+
+- 2026-04-15
+  - Added `CAST(... AS ...)` support for expression evaluation and projection validation.
+  - Enabled aggregate expressions with casted arguments (`SUM/AVG/MIN/MAX` over `CAST(...)`).
+  - Added coverage for mixed-type columns using casted aggregates.
 
 - 2026-04-15
   - Added baseline public-facing README structure.

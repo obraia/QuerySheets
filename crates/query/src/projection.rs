@@ -1,4 +1,7 @@
-use crate::expr::{eval_value, resolve_column, resolve_compound_column, sql_literal_to_value};
+use crate::expr::{
+    eval_value, is_supported_cast_data_type, resolve_column, resolve_compound_column,
+    sql_literal_to_value,
+};
 use crate::QueryError;
 use query_sheets_core::{Column, Row, Schema, Value};
 use sqlparser::ast::{BinaryOperator, Expr, SelectItem, UnaryOperator};
@@ -83,6 +86,17 @@ fn validate_projection_expr(schema: &Schema, expr: &Expr) -> Result<(), QueryErr
         Expr::Value(value) => {
             let _ = sql_literal_to_value(value).map_err(|_| QueryError::UnsupportedSelect(expr.to_string()))?;
             Ok(())
+        }
+        Expr::Cast {
+            expr: inner,
+            data_type,
+            ..
+        } => {
+            if !is_supported_cast_data_type(data_type) {
+                return Err(QueryError::UnsupportedSelect(expr.to_string()));
+            }
+
+            validate_projection_expr(schema, inner)
         }
         Expr::Nested(inner) => validate_projection_expr(schema, inner),
         Expr::UnaryOp { op, expr: inner } => match op {

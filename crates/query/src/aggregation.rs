@@ -1,9 +1,12 @@
-use crate::expr::{eval_predicate, resolve_column, resolve_compound_column};
+use crate::expr::{
+    eval_predicate, eval_value, is_supported_cast_data_type, resolve_column, resolve_compound_column,
+};
 use crate::projection::projection_output_name;
 use crate::{QueryError, QueryExecution};
 use query_sheets_core::{Column, DataSource, Row, Schema, Value};
 use sqlparser::ast::{
-    Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments, GroupByExpr, SelectItem,
+    BinaryOperator, Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments, GroupByExpr,
+    SelectItem, UnaryOperator,
 };
 
 #[derive(Debug, Clone)]
@@ -11,19 +14,19 @@ pub(crate) enum AggregationSelectItem {
     GroupKey(usize),
     CountRows,
     SumColumn {
-        column_index: usize,
+        value_expr: Expr,
         expression: String,
     },
     AvgColumn {
-        column_index: usize,
+        value_expr: Expr,
         expression: String,
     },
     MinColumn {
-        column_index: usize,
+        value_expr: Expr,
         expression: String,
     },
     MaxColumn {
-        column_index: usize,
+        value_expr: Expr,
         expression: String,
     },
 }
@@ -157,10 +160,15 @@ pub(crate) fn execute_group_by_aggregation<'a>(
             .collect::<Vec<_>>();
 
         if let Some(group_state) = groups.iter_mut().find(|state| state.key_values == key_values) {
-            apply_row_to_group_state(&select_items, &mut group_state.aggregation_states, &row)?;
+            apply_row_to_group_state(
+                &select_items,
+                &mut group_state.aggregation_states,
+                &row,
+                schema,
+            )?;
         } else {
             let mut aggregation_states = initial_group_state(&select_items);
-            apply_row_to_group_state(&select_items, &mut aggregation_states, &row)?;
+            apply_row_to_group_state(&select_items, &mut aggregation_states, &row, schema)?;
             groups.push(GroupByState {
                 key_values,
                 aggregation_states,
@@ -237,24 +245,24 @@ fn parse_group_select_expr(
                 return Ok(AggregationSelectItem::CountRows);
             }
 
-            if let Some((aggregate_kind, column_index)) =
+            if let Some((aggregate_kind, value_expr)) =
                 parse_single_column_aggregate_argument(schema, function, expr)?
             {
                 return match aggregate_kind {
                     AggregateFunctionKind::Sum => Ok(AggregationSelectItem::SumColumn {
-                        column_index,
+                        value_expr,
                         expression: expr.to_string(),
                     }),
                     AggregateFunctionKind::Avg => Ok(AggregationSelectItem::AvgColumn {
-                        column_index,
+                        value_expr,
                         expression: expr.to_string(),
                     }),
                     AggregateFunctionKind::Min => Ok(AggregationSelectItem::MinColumn {
-                        column_index,
+                        value_expr,
                         expression: expr.to_string(),
                     }),
                     AggregateFunctionKind::Max => Ok(AggregationSelectItem::MaxColumn {
-                        column_index,
+                        value_expr,
                         expression: expr.to_string(),
                     }),
                 };
@@ -270,7 +278,7 @@ fn parse_single_column_aggregate_argument(
     schema: &Schema,
     function: &Function,
     original_expr: &Expr,
-) -> Result<Option<(AggregateFunctionKind, usize)>, QueryError> {
+) -> Result<Option<(AggregateFunctionKind, Expr)>, QueryError> {
     let Some(function_name) = function.name.0.last() else {
         return Ok(None);
     };
@@ -310,13 +318,61 @@ fn parse_single_column_aggregate_argument(
         return Err(QueryError::UnsupportedSelect(original_expr.to_string()));
     };
 
-    let column_index = match argument_expr {
-        Expr::Identifier(identifier) => resolve_column(schema, identifier)?,
-        Expr::CompoundIdentifier(identifiers) => resolve_compound_column(schema, identifiers)?,
-        _ => return Err(QueryError::UnsupportedSelect(original_expr.to_string())),
-    };
+    validate_aggregate_value_expr(schema, argument_expr, original_expr)?;
 
-    Ok(Some((aggregate_kind, column_index)))
+    Ok(Some((aggregate_kind, argument_expr.clone())))
+}
+
+fn validate_aggregate_value_expr(
+    schema: &Schema,
+    expr: &Expr,
+    original_expr: &Expr,
+) -> Result<(), QueryError> {
+    match expr {
+        Expr::Identifier(identifier) => {
+            let _ = resolve_column(schema, identifier)?;
+            Ok(())
+        }
+        Expr::CompoundIdentifier(identifiers) => {
+            let _ = resolve_compound_column(schema, identifiers)?;
+            Ok(())
+        }
+        Expr::Cast {
+            expr: inner,
+            data_type,
+            ..
+        } => {
+            if !is_supported_cast_data_type(data_type) {
+                return Err(QueryError::UnsupportedSelect(original_expr.to_string()));
+            }
+
+            validate_aggregate_value_expr(schema, inner, original_expr)
+        }
+        Expr::Nested(inner) => validate_aggregate_value_expr(schema, inner, original_expr),
+        Expr::UnaryOp { op, expr: inner } => {
+            if !matches!(op, UnaryOperator::Plus | UnaryOperator::Minus) {
+                return Err(QueryError::UnsupportedSelect(original_expr.to_string()));
+            }
+
+            validate_aggregate_value_expr(schema, inner, original_expr)
+        }
+        Expr::BinaryOp { left, op, right } => {
+            if !matches!(
+                op,
+                BinaryOperator::Plus
+                    | BinaryOperator::Minus
+                    | BinaryOperator::Multiply
+                    | BinaryOperator::Divide
+                    | BinaryOperator::Modulo
+            ) {
+                return Err(QueryError::UnsupportedSelect(original_expr.to_string()));
+            }
+
+            validate_aggregate_value_expr(schema, left, original_expr)?;
+            validate_aggregate_value_expr(schema, right, original_expr)
+        }
+        _ => Err(QueryError::UnsupportedSelect(original_expr.to_string())),
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -547,6 +603,7 @@ fn apply_row_to_group_state(
     select_items: &[AggregationSelectItem],
     aggregation_states: &mut [GroupAggregationState],
     row: &Row,
+    schema: &Schema,
 ) -> Result<(), QueryError> {
     for (item, state) in select_items.iter().zip(aggregation_states.iter_mut()) {
         match (item, state) {
@@ -556,43 +613,43 @@ fn apply_row_to_group_state(
             }
             (
                 AggregationSelectItem::SumColumn {
-                    column_index,
+                    value_expr,
                     expression,
                 },
                 GroupAggregationState::Sum(sum_accumulator),
             ) => {
-                let value = row.values.get(*column_index).unwrap_or(&Value::Null);
-                sum_accumulator.add_value(value, expression)?;
+                let value = eval_value(value_expr, row, schema)?;
+                sum_accumulator.add_value(&value, expression)?;
             }
             (
                 AggregationSelectItem::AvgColumn {
-                    column_index,
+                    value_expr,
                     expression,
                 },
                 GroupAggregationState::Avg(avg_accumulator),
             ) => {
-                let value = row.values.get(*column_index).unwrap_or(&Value::Null);
-                avg_accumulator.add_value(value, expression)?;
+                let value = eval_value(value_expr, row, schema)?;
+                avg_accumulator.add_value(&value, expression)?;
             }
             (
                 AggregationSelectItem::MinColumn {
-                    column_index,
+                    value_expr,
                     expression,
                 },
                 GroupAggregationState::Min(min_accumulator),
             ) => {
-                let value = row.values.get(*column_index).unwrap_or(&Value::Null);
-                min_accumulator.add_value(value, expression, false)?;
+                let value = eval_value(value_expr, row, schema)?;
+                min_accumulator.add_value(&value, expression, false)?;
             }
             (
                 AggregationSelectItem::MaxColumn {
-                    column_index,
+                    value_expr,
                     expression,
                 },
                 GroupAggregationState::Max(max_accumulator),
             ) => {
-                let value = row.values.get(*column_index).unwrap_or(&Value::Null);
-                max_accumulator.add_value(value, expression, true)?;
+                let value = eval_value(value_expr, row, schema)?;
+                max_accumulator.add_value(&value, expression, true)?;
             }
             _ => {}
         }

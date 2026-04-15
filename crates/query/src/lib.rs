@@ -301,6 +301,65 @@ mod tests {
     }
 
     #[test]
+    fn executes_group_by_with_casted_numeric_aggregations() {
+        let source = MockSource {
+            schema: Schema::new(vec![Column::new("segment"), Column::new("tempo")]),
+            rows: vec![
+                Row::new(vec![Value::String("Enterprise".into()), Value::Int(10)]),
+                Row::new(vec![
+                    Value::String("Enterprise".into()),
+                    Value::String("-".into()),
+                ]),
+                Row::new(vec![
+                    Value::String("Enterprise".into()),
+                    Value::String("20".into()),
+                ]),
+                Row::new(vec![
+                    Value::String("SMB".into()),
+                    Value::String("5.5".into()),
+                ]),
+                Row::new(vec![
+                    Value::String("SMB".into()),
+                    Value::String("n/a".into()),
+                ]),
+            ],
+        };
+
+        let engine = SqlLikeQueryEngine;
+        let execution = engine
+            .execute_with_schema(
+                &source,
+                "SELECT segment, COUNT(*) AS total_rows, AVG(CAST(tempo AS FLOAT)) AS avg_tempo, SUM(CAST(tempo AS FLOAT)) AS total_tempo, MIN(CAST(tempo AS FLOAT)) AS min_tempo, MAX(CAST(tempo AS FLOAT)) AS max_tempo FROM planilha GROUP BY segment",
+            )
+            .expect("query should execute");
+
+        let rows = execution.rows.collect::<Vec<_>>();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0].values,
+            vec![
+                Value::String("Enterprise".into()),
+                Value::Int(3),
+                Value::Float(15.0),
+                Value::Float(30.0),
+                Value::Float(10.0),
+                Value::Float(20.0),
+            ]
+        );
+        assert_eq!(
+            rows[1].values,
+            vec![
+                Value::String("SMB".into()),
+                Value::Int(2),
+                Value::Float(5.5),
+                Value::Float(5.5),
+                Value::Float(5.5),
+                Value::Float(5.5),
+            ]
+        );
+    }
+
+    #[test]
     fn returns_error_when_sum_targets_non_numeric_column() {
         let source = MockSource {
             schema: Schema::new(vec![Column::new("segment"), Column::new("name")]),

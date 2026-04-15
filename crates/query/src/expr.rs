@@ -1,6 +1,6 @@
 use crate::QueryError;
 use query_sheets_core::{Row, Schema, Value};
-use sqlparser::ast::{BinaryOperator, Expr, Ident, UnaryOperator, Value as SqlValue};
+use sqlparser::ast::{BinaryOperator, DataType, Expr, Ident, UnaryOperator, Value as SqlValue};
 
 pub(crate) fn resolve_column(schema: &Schema, identifier: &Ident) -> Result<usize, QueryError> {
     resolve_column_name(schema, &identifier.value)
@@ -52,6 +52,14 @@ pub(crate) fn eval_value(expr: &Expr, row: &Row, schema: &Schema) -> Result<Valu
             Ok(row.values.get(idx).cloned().unwrap_or(Value::Null))
         }
         Expr::Value(value) => sql_literal_to_value(value),
+        Expr::Cast {
+            expr: inner,
+            data_type,
+            ..
+        } => {
+            let value = eval_value(inner, row, schema)?;
+            cast_value(value, data_type)
+        }
         Expr::Nested(inner) => eval_value(inner, row, schema),
         Expr::UnaryOp { op, expr: inner } => {
             let value = eval_value(inner, row, schema)?;
@@ -79,6 +87,10 @@ pub(crate) fn eval_value(expr: &Expr, row: &Row, schema: &Schema) -> Result<Valu
         }
         _ => Err(QueryError::UnsupportedWhere(expr.to_string())),
     }
+}
+
+pub(crate) fn is_supported_cast_data_type(data_type: &DataType) -> bool {
+    cast_target_type(data_type).is_some()
 }
 
 pub(crate) fn sql_literal_to_value(value: &SqlValue) -> Result<Value, QueryError> {
@@ -203,5 +215,145 @@ fn compare_ordering(op: &BinaryOperator, ordering: std::cmp::Ordering) -> bool {
             ordering == std::cmp::Ordering::Less || ordering == std::cmp::Ordering::Equal
         }
         _ => false,
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CastTargetType {
+    Integer,
+    Float,
+    String,
+    Bool,
+}
+
+fn cast_target_type(data_type: &DataType) -> Option<CastTargetType> {
+    let normalized = data_type.to_string().to_ascii_uppercase();
+
+    if normalized.contains("CHAR")
+        || normalized.contains("TEXT")
+        || normalized.contains("STRING")
+    {
+        return Some(CastTargetType::String);
+    }
+
+    if normalized.contains("BOOL") {
+        return Some(CastTargetType::Bool);
+    }
+
+    if normalized.contains("FLOAT")
+        || normalized.contains("DOUBLE")
+        || normalized.contains("REAL")
+        || normalized.contains("DECIMAL")
+        || normalized.contains("NUMERIC")
+        || normalized.contains("NUMBER")
+    {
+        return Some(CastTargetType::Float);
+    }
+
+    if normalized.contains("INT") && !normalized.contains("INTERVAL") {
+        return Some(CastTargetType::Integer);
+    }
+
+    None
+}
+
+fn cast_value(value: Value, data_type: &DataType) -> Result<Value, QueryError> {
+    let target = cast_target_type(data_type).ok_or_else(|| {
+        QueryError::UnsupportedWhere(format!("unsupported cast target type: {data_type}"))
+    })?;
+
+    if matches!(value, Value::Null) {
+        return Ok(Value::Null);
+    }
+
+    match target {
+        CastTargetType::Integer => Ok(cast_to_int(value)),
+        CastTargetType::Float => Ok(cast_to_float(value)),
+        CastTargetType::String => Ok(cast_to_string(value)),
+        CastTargetType::Bool => Ok(cast_to_bool(value)),
+    }
+}
+
+fn cast_to_int(value: Value) -> Value {
+    match value {
+        Value::Int(v) => Value::Int(v),
+        Value::Float(v) => {
+            if !v.is_finite() {
+                return Value::Null;
+            }
+
+            if v < i64::MIN as f64 || v > i64::MAX as f64 {
+                return Value::Null;
+            }
+
+            Value::Int(v.trunc() as i64)
+        }
+        Value::String(v) => {
+            let trimmed = v.trim();
+
+            if let Ok(parsed) = trimmed.parse::<i64>() {
+                return Value::Int(parsed);
+            }
+
+            if let Ok(parsed) = trimmed.parse::<f64>() {
+                if parsed.is_finite() && parsed >= i64::MIN as f64 && parsed <= i64::MAX as f64 {
+                    return Value::Int(parsed.trunc() as i64);
+                }
+            }
+
+            Value::Null
+        }
+        Value::Bool(v) => Value::Int(if v { 1 } else { 0 }),
+        Value::Null => Value::Null,
+    }
+}
+
+fn cast_to_float(value: Value) -> Value {
+    match value {
+        Value::Int(v) => Value::Float(v as f64),
+        Value::Float(v) => Value::Float(v),
+        Value::String(v) => {
+            let trimmed = v.trim();
+            trimmed
+                .parse::<f64>()
+                .map(Value::Float)
+                .unwrap_or(Value::Null)
+        }
+        Value::Bool(v) => Value::Float(if v { 1.0 } else { 0.0 }),
+        Value::Null => Value::Null,
+    }
+}
+
+fn cast_to_string(value: Value) -> Value {
+    match value {
+        Value::Int(v) => Value::String(v.to_string()),
+        Value::Float(v) => Value::String(v.to_string()),
+        Value::String(v) => Value::String(v),
+        Value::Bool(v) => Value::String(v.to_string()),
+        Value::Null => Value::Null,
+    }
+}
+
+fn cast_to_bool(value: Value) -> Value {
+    match value {
+        Value::Bool(v) => Value::Bool(v),
+        Value::Int(v) => Value::Bool(v != 0),
+        Value::Float(v) => {
+            if !v.is_finite() {
+                return Value::Null;
+            }
+
+            Value::Bool(v != 0.0)
+        }
+        Value::String(v) => {
+            let normalized = v.trim().to_ascii_lowercase();
+
+            match normalized.as_str() {
+                "true" | "t" | "yes" | "y" | "1" => Value::Bool(true),
+                "false" | "f" | "no" | "n" | "0" => Value::Bool(false),
+                _ => Value::Null,
+            }
+        }
+        Value::Null => Value::Null,
     }
 }

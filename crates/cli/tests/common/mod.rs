@@ -54,6 +54,33 @@ pub fn create_sales_fixture(path: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+pub fn create_activity_time_fixture(path: &Path) -> Result<(), Box<dyn Error>> {
+    let mut workbook = Workbook::new();
+    let worksheet = workbook.add_worksheet();
+    worksheet.set_name("Times")?;
+
+    worksheet.write_string(0, 0, "Atividade")?;
+    worksheet.write_string(0, 1, "Tempo")?;
+
+    worksheet.write_string(1, 0, "A")?;
+    worksheet.write_number(1, 1, 10.0)?;
+
+    worksheet.write_string(2, 0, "A")?;
+    worksheet.write_string(2, 1, "-")?;
+
+    worksheet.write_string(3, 0, "A")?;
+    worksheet.write_string(3, 1, "20")?;
+
+    worksheet.write_string(4, 0, "B")?;
+    worksheet.write_string(4, 1, "5.5")?;
+
+    worksheet.write_string(5, 0, "B")?;
+    worksheet.write_string(5, 1, "n/a")?;
+
+    workbook.save(path)?;
+    Ok(())
+}
+
 pub fn create_multi_sheet_customers_fixture(path: &Path) -> Result<(), Box<dyn Error>> {
     let mut workbook = Workbook::new();
 
