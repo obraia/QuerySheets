@@ -19,12 +19,13 @@ Implemented today:
 - Projection aliases in `SELECT ... AS ...`
 - Simple arithmetic expressions in projection (`+`, `-`, `*`, `/`, `%`)
 - Projected schema support (used by CLI header output)
+- First aggregation slice: `GROUP BY` + `COUNT(*)`
 - CLI with `query` command, `--sheet`, and `--header`
 - CSV/JSON/JSONL export inferred from `--output` extension (`.csv`, `.json`, `.jsonl`)
 - Integration tests with generated `.xlsx` fixtures
 
 Not implemented yet:
-- Aggregations (`GROUP BY`, `COUNT`, `SUM`, etc.)
+- Additional aggregations (`SUM`, `AVG`, `MIN`, `MAX`, etc.)
 - Node bindings (`napi-rs`)
 - Parallel execution
 - Custom Excel parser
@@ -195,7 +196,7 @@ Phase 1 (in progress):
 - `SELECT` + `WHERE`
 
 Phase 2:
-- Aggregations (`GROUP BY`)
+- Aggregations (`GROUP BY`) - first slice (`COUNT(*)`) implemented
 - export improvements (format options)
 
 Phase 3:
@@ -219,6 +220,7 @@ Use this section to keep documentation changes visible over time.
   - Implemented Phase 2 start: CSV/JSON/JSONL export in CLI via `--output` extension inference.
   - Added integration tests for export success paths and output extension validation.
   - Implemented streaming JSON array serialization to reduce memory peak on large outputs.
+  - Implemented first aggregation slice: `GROUP BY` + `COUNT(*)` in query engine and CLI integration tests.
 
 - 2026-04-15
   - Added baseline public-facing README structure.

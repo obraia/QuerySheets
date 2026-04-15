@@ -56,3 +56,21 @@ fn query_outputs_wildcard_header_and_rows() -> Result<(), Box<dyn Error>> {
 
     Ok(())
 }
+
+#[test]
+fn query_outputs_group_by_count_header_and_rows() -> Result<(), Box<dyn Error>> {
+    let tmp = tempdir()?;
+    let fixture = tmp.path().join("customers.xlsx");
+    create_customers_fixture(&fixture)?;
+
+    let sql = "SELECT Segment, COUNT(*) AS TotalCustomers FROM Customers GROUP BY Segment";
+    let stdout = run_cli_query(&fixture, sql, None, true)?;
+    let lines = stdout.lines().collect::<Vec<_>>();
+
+    assert_eq!(lines.len(), 3);
+    assert_eq!(lines[0], "Segment\tTotalCustomers");
+    assert_eq!(lines[1], "Enterprise\t2");
+    assert_eq!(lines[2], "SMB\t1");
+
+    Ok(())
+}
