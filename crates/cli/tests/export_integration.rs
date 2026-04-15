@@ -46,3 +46,29 @@ fn query_exports_json_as_object_array() -> Result<(), Box<dyn Error>> {
 
     Ok(())
 }
+
+#[test]
+fn query_exports_jsonl_as_line_delimited_json() -> Result<(), Box<dyn Error>> {
+    let tmp = tempdir()?;
+    let fixture = tmp.path().join("customers.xlsx");
+    let output = tmp.path().join("customers_export.jsonl");
+    create_customers_fixture(&fixture)?;
+
+    let sql = "SELECT CustomerId, Segment FROM Customers WHERE AccountStatus = 'Active'";
+    run_cli_export(&fixture, sql, None, &output)?;
+
+    let content = fs::read_to_string(&output)?;
+    let lines = content.lines().collect::<Vec<_>>();
+
+    assert_eq!(lines.len(), 2);
+
+    let first: serde_json::Value = serde_json::from_str(lines[0])?;
+    let second: serde_json::Value = serde_json::from_str(lines[1])?;
+
+    assert_eq!(first["CustomerId"], "C-001");
+    assert_eq!(first["Segment"], "Enterprise");
+    assert_eq!(second["CustomerId"], "C-002");
+    assert_eq!(second["Segment"], "SMB");
+
+    Ok(())
+}
