@@ -97,6 +97,37 @@ fn executes_group_by_with_count_sum_and_avg() {
 }
 
 #[test]
+fn executes_group_by_with_stddev() {
+    let source = MockSource {
+        schema: Schema::new(vec![Column::new("segment"), Column::new("revenue")]),
+        rows: vec![
+            Row::new(vec![Value::String("Enterprise".into()), Value::Int(120)]),
+            Row::new(vec![Value::String("Enterprise".into()), Value::Int(91)]),
+            Row::new(vec![Value::String("SMB".into()), Value::Int(50)]),
+        ],
+    };
+
+    let engine = SqlLikeQueryEngine;
+    let execution = engine
+        .execute_with_schema(
+            &source,
+            "SELECT segment, STDDEV(revenue) AS std_revenue FROM planilha GROUP BY segment",
+        )
+        .expect("query should execute");
+
+    let rows = execution.rows.collect::<Vec<_>>();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        rows[0].values,
+        vec![Value::String("Enterprise".into()), Value::Float(14.5)]
+    );
+    assert_eq!(
+        rows[1].values,
+        vec![Value::String("SMB".into()), Value::Float(0.0)]
+    );
+}
+
+#[test]
 fn executes_group_by_with_min_and_max() {
     let source = MockSource {
         schema: Schema::new(vec![Column::new("segment"), Column::new("revenue")]),
@@ -260,5 +291,44 @@ fn executes_group_by_with_count_cast_expression() {
     assert_eq!(
         rows[1].values,
         vec![Value::String("SMB".into()), Value::Int(1)]
+    );
+}
+
+#[test]
+fn executes_group_by_with_stddev_cast_expression() {
+    let source = MockSource {
+        schema: Schema::new(vec![Column::new("segment"), Column::new("tempo")]),
+        rows: vec![
+            Row::new(vec![Value::String("Enterprise".into()), Value::Int(10)]),
+            Row::new(vec![
+                Value::String("Enterprise".into()),
+                Value::String("-".into()),
+            ]),
+            Row::new(vec![
+                Value::String("Enterprise".into()),
+                Value::String("20".into()),
+            ]),
+            Row::new(vec![Value::String("SMB".into()), Value::String("5.5".into())]),
+            Row::new(vec![Value::String("SMB".into()), Value::String("n/a".into())]),
+        ],
+    };
+
+    let engine = SqlLikeQueryEngine;
+    let execution = engine
+        .execute_with_schema(
+            &source,
+            "SELECT segment, STDDEV(CAST(tempo AS FLOAT)) AS std_tempo FROM planilha GROUP BY segment",
+        )
+        .expect("query should execute");
+
+    let rows = execution.rows.collect::<Vec<_>>();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        rows[0].values,
+        vec![Value::String("Enterprise".into()), Value::Float(5.0)]
+    );
+    assert_eq!(
+        rows[1].values,
+        vec![Value::String("SMB".into()), Value::Float(0.0)]
     );
 }

@@ -24,6 +24,10 @@ pub(crate) enum AggregationSelectItem {
         value_expr: Expr,
         expression: String,
     },
+    StddevColumn {
+        value_expr: Expr,
+        expression: String,
+    },
     MinColumn {
         value_expr: Expr,
         expression: String,
@@ -94,6 +98,7 @@ pub(crate) fn build_group_by_aggregation_plan(
                     || matches!(plan_item, AggregationSelectItem::CountValues { .. })
                     || matches!(plan_item, AggregationSelectItem::SumColumn { .. })
                     || matches!(plan_item, AggregationSelectItem::AvgColumn { .. })
+                    || matches!(plan_item, AggregationSelectItem::StddevColumn { .. })
                     || matches!(plan_item, AggregationSelectItem::MinColumn { .. })
                     || matches!(plan_item, AggregationSelectItem::MaxColumn { .. })
                 {
@@ -109,6 +114,7 @@ pub(crate) fn build_group_by_aggregation_plan(
                     || matches!(plan_item, AggregationSelectItem::CountValues { .. })
                     || matches!(plan_item, AggregationSelectItem::SumColumn { .. })
                     || matches!(plan_item, AggregationSelectItem::AvgColumn { .. })
+                    || matches!(plan_item, AggregationSelectItem::StddevColumn { .. })
                     || matches!(plan_item, AggregationSelectItem::MinColumn { .. })
                     || matches!(plan_item, AggregationSelectItem::MaxColumn { .. })
                 {
@@ -209,6 +215,10 @@ pub(crate) fn execute_group_by_aggregation<'a>(
                     GroupAggregationState::Avg(avg_accumulator),
                 ) => avg_accumulator.to_value(),
                 (
+                    AggregationSelectItem::StddevColumn { .. },
+                    GroupAggregationState::Stddev(stddev_accumulator),
+                ) => stddev_accumulator.to_value(),
+                (
                     AggregationSelectItem::MinColumn { .. },
                     GroupAggregationState::Min(min_accumulator),
                 ) => min_accumulator.to_value(),
@@ -271,6 +281,10 @@ fn parse_group_select_expr(
                         value_expr,
                         expression: expr.to_string(),
                     }),
+                    AggregateFunctionKind::Stddev => Ok(AggregationSelectItem::StddevColumn {
+                        value_expr,
+                        expression: expr.to_string(),
+                    }),
                     AggregateFunctionKind::Min => Ok(AggregationSelectItem::MinColumn {
                         value_expr,
                         expression: expr.to_string(),
@@ -303,6 +317,8 @@ fn parse_single_column_aggregate_argument(
         AggregateFunctionKind::Sum
     } else if function_name.value.eq_ignore_ascii_case("avg") {
         AggregateFunctionKind::Avg
+    } else if function_name.value.eq_ignore_ascii_case("stddev") {
+        AggregateFunctionKind::Stddev
     } else if function_name.value.eq_ignore_ascii_case("min") {
         AggregateFunctionKind::Min
     } else if function_name.value.eq_ignore_ascii_case("max") {
@@ -396,6 +412,7 @@ enum AggregateFunctionKind {
     Count,
     Sum,
     Avg,
+    Stddev,
     Min,
     Max,
 }
@@ -447,6 +464,7 @@ enum GroupAggregationState {
     CountValues(i64),
     Sum(SumAccumulator),
     Avg(AvgAccumulator),
+    Stddev(StddevAccumulator),
     Min(MinMaxAccumulator),
     Max(MinMaxAccumulator),
 }
@@ -506,6 +524,13 @@ impl SumAccumulator {
 struct AvgAccumulator {
     sum: f64,
     count: i64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct StddevAccumulator {
+    count: u64,
+    mean: f64,
+    m2: f64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -595,6 +620,38 @@ impl AvgAccumulator {
     }
 }
 
+impl StddevAccumulator {
+    fn add_value(&mut self, value: &Value, expression: &str) -> Result<(), QueryError> {
+        let numeric = match value {
+            Value::Int(v) => *v as f64,
+            Value::Float(v) => *v,
+            Value::Null => return Ok(()),
+            _ => {
+                return Err(QueryError::UnsupportedSelect(format!(
+                    "{expression} requires numeric values"
+                )));
+            }
+        };
+
+        self.count += 1;
+        let delta = numeric - self.mean;
+        self.mean += delta / self.count as f64;
+        let delta2 = numeric - self.mean;
+        self.m2 += delta * delta2;
+
+        Ok(())
+    }
+
+    fn to_value(&self) -> Value {
+        if self.count == 0 {
+            return Value::Null;
+        }
+
+        let variance = self.m2 / self.count as f64;
+        Value::Float(variance.sqrt())
+    }
+}
+
 fn initial_group_state(select_items: &[AggregationSelectItem]) -> Vec<GroupAggregationState> {
     select_items
         .iter()
@@ -607,6 +664,9 @@ fn initial_group_state(select_items: &[AggregationSelectItem]) -> Vec<GroupAggre
             }
             AggregationSelectItem::AvgColumn { .. } => {
                 GroupAggregationState::Avg(AvgAccumulator::default())
+            }
+            AggregationSelectItem::StddevColumn { .. } => {
+                GroupAggregationState::Stddev(StddevAccumulator::default())
             }
             AggregationSelectItem::MinColumn { .. } => {
                 GroupAggregationState::Min(MinMaxAccumulator::default())
@@ -658,6 +718,16 @@ fn apply_row_to_group_state(
             ) => {
                 let value = eval_value(value_expr, row, schema)?;
                 avg_accumulator.add_value(&value, expression)?;
+            }
+            (
+                AggregationSelectItem::StddevColumn {
+                    value_expr,
+                    expression,
+                },
+                GroupAggregationState::Stddev(stddev_accumulator),
+            ) => {
+                let value = eval_value(value_expr, row, schema)?;
+                stddev_accumulator.add_value(&value, expression)?;
             }
             (
                 AggregationSelectItem::MinColumn {

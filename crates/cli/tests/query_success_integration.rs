@@ -156,6 +156,24 @@ fn query_outputs_group_by_count_column_with_cast_expression() -> Result<(), Box<
 }
 
 #[test]
+fn query_outputs_group_by_stddev_with_cast_expression() -> Result<(), Box<dyn Error>> {
+    let tmp = tempdir()?;
+    let fixture = tmp.path().join("times.xlsx");
+    create_activity_time_fixture(&fixture)?;
+
+    let sql = "SELECT Atividade, STDDEV(CAST(Tempo AS FLOAT)) AS StdTempo FROM Times GROUP BY Atividade";
+    let stdout = run_cli_query(&fixture, sql, None, true)?;
+    let lines = stdout.lines().collect::<Vec<_>>();
+
+    assert_eq!(lines.len(), 3);
+    assert_eq!(lines[0], "Atividade\tStdTempo");
+    assert_eq!(lines[1], "A\t5");
+    assert_eq!(lines[2], "B\t0");
+
+    Ok(())
+}
+
+#[test]
 fn query_outputs_rows_with_limit_and_offset() -> Result<(), Box<dyn Error>> {
     let tmp = tempdir()?;
     let fixture = tmp.path().join("customers.xlsx");

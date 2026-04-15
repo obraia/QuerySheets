@@ -34,6 +34,37 @@ fn returns_error_when_sum_targets_non_numeric_column() {
 }
 
 #[test]
+fn returns_error_when_stddev_targets_non_numeric_column() {
+    let source = MockSource {
+        schema: Schema::new(vec![Column::new("segment"), Column::new("name")]),
+        rows: vec![
+            Row::new(vec![
+                Value::String("Enterprise".into()),
+                Value::String("ana".into()),
+            ]),
+            Row::new(vec![Value::String("SMB".into()), Value::String("bia".into())]),
+        ],
+    };
+
+    let engine = SqlLikeQueryEngine;
+    let err = match engine.execute(
+        &source,
+        "SELECT segment, STDDEV(name) FROM planilha GROUP BY segment",
+    ) {
+        Ok(_) => panic!("query should fail"),
+        Err(err) => err,
+    };
+
+    match err {
+        QueryError::UnsupportedSelect(message) => {
+            assert!(message.contains("STDDEV(name)"));
+            assert!(message.contains("numeric"));
+        }
+        other => panic!("expected UnsupportedSelect error, got {other:?}"),
+    }
+}
+
+#[test]
 fn returns_error_when_min_targets_mixed_incomparable_values() {
     let source = MockSource {
         schema: Schema::new(vec![Column::new("segment"), Column::new("value")]),

@@ -20,7 +20,7 @@ Implemented today:
 - Simple arithmetic expressions in projection (`+`, `-`, `*`, `/`, `%`)
 - Conversion expressions via `CAST(... AS ...)`
 - Projected schema support (used by CLI header output)
-- Aggregations with `GROUP BY` using `COUNT(*)`, `COUNT(column)`, `SUM(column)`, `AVG(column)`, `MIN(column)`, and `MAX(column)`
+- Aggregations with `GROUP BY` using `COUNT(*)`, `COUNT(column)`, `SUM(column)`, `AVG(column)`, `STDDEV(column)`, `MIN(column)`, and `MAX(column)`
 - Ordering with `ORDER BY` (`ASC`/`DESC`, optional `NULLS FIRST`/`NULLS LAST`)
 - Pagination with `LIMIT` and `OFFSET`
 - CLI with `query` command, `--sheet`, `--header`, and `--case-sensitive-strings`
@@ -28,7 +28,7 @@ Implemented today:
 - Integration tests with generated `.xlsx` fixtures
 
 Not implemented yet:
-- Additional aggregations (`STDDEV`, etc.)
+- Additional aggregations (`VARIANCE`, `MEDIAN`, etc.)
 - Node bindings (`napi-rs`)
 - Parallel execution
 - Custom Excel parser
@@ -203,6 +203,7 @@ Supported:
   - `COUNT(column)`
   - `SUM(column)`
   - `AVG(column)`
+  - `STDDEV(column)`
   - `MIN(column)`
   - `MAX(column)`
   - aggregate arguments can use casted expressions, e.g. `AVG(CAST(Tempo AS FLOAT))`
@@ -219,7 +220,7 @@ Supported:
 Not supported yet:
 - joins
 - subqueries
-- additional aggregate functions (`COUNT(column)`, `STDDEV`, etc.)
+- additional aggregate functions (`VARIANCE`, `MEDIAN`, etc.)
 
 ## Testing
 
@@ -248,7 +249,7 @@ Phase 1 (in progress):
 - `SELECT` + `WHERE`
 
 Phase 2:
-- Aggregations (`GROUP BY`) - current support: `COUNT(*)`, `COUNT(column)`, `SUM(column)`, `AVG(column)`, `MIN(column)`, `MAX(column)`
+- Aggregations (`GROUP BY`) - current support: `COUNT(*)`, `COUNT(column)`, `SUM(column)`, `AVG(column)`, `STDDEV(column)`, `MIN(column)`, `MAX(column)`
 - export improvements (format options)
 
 Phase 3:
@@ -268,6 +269,10 @@ Phase 4:
 ## Documentation Changelog
 
 Use this section to keep documentation changes visible over time.
+
+- 2026-04-15
+  - Added `STDDEV(column)` aggregation support (population standard deviation, ignoring `NULL` values).
+  - Added query engine and CLI integration tests for `STDDEV` success and error scenarios.
 
 - 2026-04-15
   - Added `COUNT(column)` aggregation support (counts non-NULL values).
