@@ -1,4 +1,4 @@
-use query_sheets_core::{DataSource, Row, Schema, Value};
+use query_sheets_core::{Column, DataSource, Row, Schema, Value};
 use sqlparser::ast::{
     BinaryOperator, Expr, Ident, Query, Select, SelectItem, SetExpr, Statement, TableFactor,
     UnaryOperator, Value as SqlValue,
@@ -26,15 +26,28 @@ pub enum QueryError {
 }
 
 pub trait QueryEngine {
+    fn execute_with_schema<'a>(
+        &self,
+        source: &'a dyn DataSource,
+        query: &str,
+    ) -> Result<QueryExecution<'a>, QueryError>;
+
     fn execute<'a>(
         &self,
         source: &'a dyn DataSource,
         query: &str,
-    ) -> Result<Box<dyn Iterator<Item = Row> + 'a>, QueryError>;
+    ) -> Result<Box<dyn Iterator<Item = Row> + 'a>, QueryError> {
+        Ok(self.execute_with_schema(source, query)?.rows)
+    }
 }
 
 #[derive(Debug, Default)]
 pub struct SqlLikeQueryEngine;
+
+pub struct QueryExecution<'a> {
+    pub schema: Schema,
+    pub rows: Box<dyn Iterator<Item = Row> + 'a>,
+}
 
 #[derive(Debug, Clone)]
 enum ProjectionItem {
@@ -43,13 +56,13 @@ enum ProjectionItem {
 }
 
 impl QueryEngine for SqlLikeQueryEngine {
-    fn execute<'a>(
+    fn execute_with_schema<'a>(
         &self,
         source: &'a dyn DataSource,
         query: &str,
-    ) -> Result<Box<dyn Iterator<Item = Row> + 'a>, QueryError> {
+    ) -> Result<QueryExecution<'a>, QueryError> {
         let parsed_select = parse_select(query)?;
-        let projection = build_projection(source.schema(), &parsed_select.projection)?;
+        let (projection, projected_schema) = build_projection(source.schema(), &parsed_select.projection)?;
         let where_expr = parsed_select.selection;
         let schema = source.schema().clone();
 
@@ -66,7 +79,10 @@ impl QueryEngine for SqlLikeQueryEngine {
             Some(Row::new(values))
         });
 
-        Ok(Box::new(iter))
+        Ok(QueryExecution {
+            schema: projected_schema,
+            rows: Box::new(iter),
+        })
     }
 }
 
@@ -111,25 +127,30 @@ fn select_from_query(query: &Query) -> Result<Select, QueryError> {
 fn build_projection(
     schema: &Schema,
     select_items: &[SelectItem],
-) -> Result<Vec<ProjectionItem>, QueryError> {
+) -> Result<(Vec<ProjectionItem>, Schema), QueryError> {
     if select_items.is_empty() {
         return Err(QueryError::UnsupportedSelect("projection is empty".to_string()));
     }
 
     let mut projection = Vec::new();
+    let mut output_columns = Vec::new();
 
     for item in select_items {
         match item {
             SelectItem::Wildcard(_) => {
                 projection.push(ProjectionItem::Wildcard);
+                output_columns.extend(schema.columns.iter().cloned());
             }
             SelectItem::UnnamedExpr(expr) => {
                 validate_projection_expr(schema, expr)?;
+                let output_name = projection_output_name(expr);
                 projection.push(ProjectionItem::Expr(expr.clone()));
+                output_columns.push(Column::new(output_name));
             }
-            SelectItem::ExprWithAlias { expr, .. } => {
+            SelectItem::ExprWithAlias { expr, alias } => {
                 validate_projection_expr(schema, expr)?;
                 projection.push(ProjectionItem::Expr(expr.clone()));
+                output_columns.push(Column::new(alias.value.clone()));
             }
             other => {
                 return Err(QueryError::UnsupportedSelect(other.to_string()));
@@ -137,7 +158,18 @@ fn build_projection(
         }
     }
 
-    Ok(projection)
+    Ok((projection, Schema::new(output_columns)))
+}
+
+fn projection_output_name(expr: &Expr) -> String {
+    match expr {
+        Expr::Identifier(identifier) => identifier.value.clone(),
+        Expr::CompoundIdentifier(identifiers) => identifiers
+            .last()
+            .map(|ident| ident.value.clone())
+            .unwrap_or_else(|| expr.to_string()),
+        _ => expr.to_string(),
+    }
 }
 
 fn resolve_column(schema: &Schema, identifier: &Ident) -> Result<usize, QueryError> {
@@ -460,6 +492,37 @@ mod tests {
         assert_eq!(
             result[0].values,
             vec![Value::String("bia".into()), Value::Int(25), Value::Int(1)]
+        );
+    }
+
+    #[test]
+    fn returns_projected_schema_with_aliases() {
+        let source = MockSource {
+            schema: Schema::new(vec![Column::new("name"), Column::new("age")]),
+            rows: vec![Row::new(vec![Value::String("bia".into()), Value::Int(20)])],
+        };
+
+        let engine = SqlLikeQueryEngine;
+        let execution = engine
+            .execute_with_schema(
+                &source,
+                "SELECT name AS pessoa, age + 1 AS idade_ajustada, age * 2 FROM planilha",
+            )
+            .expect("query should execute");
+
+        let header = execution
+            .schema
+            .columns
+            .iter()
+            .map(|column| column.name.clone())
+            .collect::<Vec<_>>();
+        let rows = execution.rows.collect::<Vec<_>>();
+
+        assert_eq!(header, vec!["pessoa", "idade_ajustada", "age * 2"]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].values,
+            vec![Value::String("bia".into()), Value::Int(21), Value::Int(40)]
         );
     }
 }

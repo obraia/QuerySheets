@@ -20,6 +20,8 @@ enum Commands {
         sql: String,
         #[arg(short, long, help = "Nome da planilha (sobrescreve o FROM da query)")]
         sheet: Option<String>,
+        #[arg(long, default_value_t = false, help = "Imprime cabeçalho da projeção")]
+        header: bool,
     },
 }
 
@@ -38,17 +40,29 @@ fn run() -> Result<(), String> {
             file,
             sql,
             sheet,
+            header,
         } => {
             let table_from_sql = extract_table_name(&sql).map_err(|err| err.to_string())?;
             let chosen_sheet = sheet.or(table_from_sql);
 
             let source = create_excel_source(&file, chosen_sheet.as_deref()).map_err(|err| err.to_string())?;
             let engine = SqlLikeQueryEngine;
-            let rows = engine
-                .execute(source.as_ref(), &sql)
+            let mut execution = engine
+                .execute_with_schema(source.as_ref(), &sql)
                 .map_err(|err| err.to_string())?;
 
-            for row in rows {
+            if header {
+                let headers = execution
+                    .schema
+                    .columns
+                    .iter()
+                    .map(|column| column.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\t");
+                println!("{headers}");
+            }
+
+            for row in execution.rows.by_ref() {
                 let line = row
                     .values
                     .iter()
