@@ -341,6 +341,8 @@ fn filter_source_with_where(
         return Ok(None);
     };
 
+    let mut subquery_cache = SubqueryExecutionCache::default();
+
     // Materialize non-correlated subqueries once to avoid re-running them for each row.
     let pre_rewritten_where = if expr_contains_subquery(where_expr) {
         Some(rewrite_expr_subqueries(
@@ -350,6 +352,7 @@ fn filter_source_with_where(
             string_comparison_mode,
             table_resolver,
             None,
+            &mut subquery_cache,
         )?)
     } else {
         None
@@ -371,6 +374,7 @@ fn filter_source_with_where(
                     source_schema,
                     string_comparison_mode,
                     table_resolver,
+                    &mut subquery_cache,
                 )?
             } else {
                 eval_predicate(rewritten_where, &row, source_schema, string_comparison_mode)?
@@ -397,6 +401,7 @@ fn evaluate_where_expr_for_row(
     source_schema: &Schema,
     string_comparison_mode: StringComparisonMode,
     table_resolver: &mut dyn FnMut(&TableReference) -> Result<ResolvedTableData, QueryError>,
+    subquery_cache: &mut SubqueryExecutionCache,
 ) -> Result<bool, QueryError> {
     if expr_contains_subquery(where_expr) {
         let rewritten = rewrite_expr_subqueries(
@@ -406,6 +411,7 @@ fn evaluate_where_expr_for_row(
             string_comparison_mode,
             table_resolver,
             Some((row, source_schema)),
+            subquery_cache,
         )?;
 
         return eval_predicate(&rewritten, row, source_schema, string_comparison_mode);
@@ -426,6 +432,7 @@ fn execute_select_with_scalar_subqueries<'a>(
     table_resolver: &mut dyn FnMut(&TableReference) -> Result<ResolvedTableData, QueryError>,
 ) -> Result<QueryExecution<'a>, QueryError> {
     let mut projected_with_source_rows = Vec::new();
+    let mut subquery_cache = SubqueryExecutionCache::default();
 
     for source_row in scan_source.scan() {
         if let Some(expr) = where_expr {
@@ -442,6 +449,7 @@ fn execute_select_with_scalar_subqueries<'a>(
             subquery_source,
             string_comparison_mode,
             table_resolver,
+            &mut subquery_cache,
         )?;
 
         projected_with_source_rows.push((Row::new(values), source_row));
@@ -468,6 +476,7 @@ fn evaluate_projection_with_scalar_subqueries(
     source: &dyn DataSource,
     string_comparison_mode: StringComparisonMode,
     table_resolver: &mut dyn FnMut(&TableReference) -> Result<ResolvedTableData, QueryError>,
+    subquery_cache: &mut SubqueryExecutionCache,
 ) -> Result<Vec<Value>, QueryError> {
     let mut values = Vec::new();
 
@@ -484,6 +493,7 @@ fn evaluate_projection_with_scalar_subqueries(
                     source_schema,
                     string_comparison_mode,
                     table_resolver,
+                    subquery_cache,
                 )?;
                 let value = eval_value(&rewritten, source_row, source_schema)
                     .map_err(|_| QueryError::UnsupportedSelect(expr.to_string()))?;
@@ -502,6 +512,7 @@ fn rewrite_scalar_subqueries_for_projection(
     outer_schema: &Schema,
     string_comparison_mode: StringComparisonMode,
     table_resolver: &mut dyn FnMut(&TableReference) -> Result<ResolvedTableData, QueryError>,
+    subquery_cache: &mut SubqueryExecutionCache,
 ) -> Result<Expr, QueryError> {
     match expr {
         Expr::Subquery(subquery) => {
@@ -512,6 +523,7 @@ fn rewrite_scalar_subqueries_for_projection(
                 table_resolver,
                 outer_row,
                 outer_schema,
+                Some(subquery_cache),
             )?;
             Ok(value_to_sql_expr(value))
         }
@@ -523,6 +535,7 @@ fn rewrite_scalar_subqueries_for_projection(
                 outer_schema,
                 string_comparison_mode,
                 table_resolver,
+                subquery_cache,
             )?;
             let rewritten_right = rewrite_scalar_subqueries_for_projection(
                 right,
@@ -531,6 +544,7 @@ fn rewrite_scalar_subqueries_for_projection(
                 outer_schema,
                 string_comparison_mode,
                 table_resolver,
+                subquery_cache,
             )?;
 
             Ok(Expr::BinaryOp {
@@ -547,6 +561,7 @@ fn rewrite_scalar_subqueries_for_projection(
                 outer_schema,
                 string_comparison_mode,
                 table_resolver,
+                subquery_cache,
             )?,
         ))),
         Expr::UnaryOp { op, expr: inner } => Ok(Expr::UnaryOp {
@@ -558,6 +573,7 @@ fn rewrite_scalar_subqueries_for_projection(
                 outer_schema,
                 string_comparison_mode,
                 table_resolver,
+                subquery_cache,
             )?),
         }),
         Expr::Cast {
@@ -574,6 +590,7 @@ fn rewrite_scalar_subqueries_for_projection(
                 outer_schema,
                 string_comparison_mode,
                 table_resolver,
+                subquery_cache,
             )?),
             data_type: data_type.clone(),
             format: format.clone(),
@@ -590,6 +607,7 @@ fn rewrite_scalar_subqueries_for_projection(
                 outer_schema,
                 string_comparison_mode,
                 table_resolver,
+                subquery_cache,
             )?;
             let rewritten_list = list
                 .iter()
@@ -601,6 +619,7 @@ fn rewrite_scalar_subqueries_for_projection(
                         outer_schema,
                         string_comparison_mode,
                         table_resolver,
+                        subquery_cache,
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -623,6 +642,7 @@ fn rewrite_scalar_subqueries_for_projection(
                 outer_schema,
                 string_comparison_mode,
                 table_resolver,
+                subquery_cache,
             )?;
             let values = execute_subquery_values(
                 subquery,
@@ -630,6 +650,7 @@ fn rewrite_scalar_subqueries_for_projection(
                 string_comparison_mode,
                 table_resolver,
                 Some((outer_row, outer_schema)),
+                Some(subquery_cache),
             )?;
             let list = values.into_iter().map(value_to_sql_expr).collect::<Vec<_>>();
 
@@ -647,6 +668,7 @@ fn rewrite_scalar_subqueries_for_projection(
                 table_resolver,
                 *negated,
                 Some((outer_row, outer_schema)),
+                Some(subquery_cache),
             )?;
 
             Ok(Expr::Value(SqlValue::Boolean(exists)))
@@ -682,6 +704,11 @@ fn expr_contains_subquery(expr: &Expr) -> bool {
     }
 }
 
+#[derive(Default)]
+struct SubqueryExecutionCache {
+    rows_by_sql: HashMap<String, (Schema, Vec<Row>)>,
+}
+
 fn rewrite_expr_subqueries(
     expr: &Expr,
     source: &dyn DataSource,
@@ -689,6 +716,7 @@ fn rewrite_expr_subqueries(
     string_comparison_mode: StringComparisonMode,
     table_resolver: &mut dyn FnMut(&TableReference) -> Result<ResolvedTableData, QueryError>,
     outer_context: Option<(&Row, &Schema)>,
+    subquery_cache: &mut SubqueryExecutionCache,
 ) -> Result<Expr, QueryError> {
     match expr {
         Expr::InSubquery {
@@ -703,6 +731,7 @@ fn rewrite_expr_subqueries(
                 string_comparison_mode,
                 table_resolver,
                 outer_context,
+                subquery_cache,
             )?;
 
             if outer_context.is_none() && query_references_outer_schema(subquery, source_schema) {
@@ -719,6 +748,7 @@ fn rewrite_expr_subqueries(
                 string_comparison_mode,
                 table_resolver,
                 outer_context,
+                Some(subquery_cache),
             )?;
             let list = values.into_iter().map(value_to_sql_expr).collect::<Vec<_>>();
 
@@ -740,6 +770,7 @@ fn rewrite_expr_subqueries(
                 string_comparison_mode,
                 table_resolver,
                 outer_context,
+                subquery_cache,
             )?;
             let rewritten_list = list
                 .iter()
@@ -751,6 +782,7 @@ fn rewrite_expr_subqueries(
                         string_comparison_mode,
                         table_resolver,
                         outer_context,
+                        subquery_cache,
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -770,6 +802,7 @@ fn rewrite_expr_subqueries(
                     string_comparison_mode,
                     table_resolver,
                     outer_context,
+                    subquery_cache,
                 )?;
             let rewritten_right =
                 rewrite_expr_subqueries(
@@ -779,6 +812,7 @@ fn rewrite_expr_subqueries(
                     string_comparison_mode,
                     table_resolver,
                     outer_context,
+                    subquery_cache,
                 )?;
 
             Ok(Expr::BinaryOp {
@@ -802,6 +836,7 @@ fn rewrite_expr_subqueries(
                 table_resolver,
                 *negated,
                 outer_context,
+                Some(subquery_cache),
             )?;
 
             Ok(Expr::Value(SqlValue::Boolean(exists)))
@@ -813,6 +848,7 @@ fn rewrite_expr_subqueries(
             string_comparison_mode,
             table_resolver,
             outer_context,
+            subquery_cache,
         )?))),
         _ => Ok(expr.clone()),
     }
@@ -923,6 +959,7 @@ fn execute_exists_subquery(
     table_resolver: &mut dyn FnMut(&TableReference) -> Result<ResolvedTableData, QueryError>,
     negated: bool,
     outer_context: Option<(&Row, &Schema)>,
+    subquery_cache: Option<&mut SubqueryExecutionCache>,
 ) -> Result<bool, QueryError> {
     let (_schema, rows) = execute_subquery_rows(
         subquery,
@@ -930,6 +967,7 @@ fn execute_exists_subquery(
         string_comparison_mode,
         table_resolver,
         outer_context,
+        subquery_cache,
     )?;
 
     let exists = !rows.is_empty();
@@ -942,6 +980,7 @@ fn execute_subquery_values(
     string_comparison_mode: StringComparisonMode,
     table_resolver: &mut dyn FnMut(&TableReference) -> Result<ResolvedTableData, QueryError>,
     outer_context: Option<(&Row, &Schema)>,
+    subquery_cache: Option<&mut SubqueryExecutionCache>,
 ) -> Result<Vec<Value>, QueryError> {
     let (schema, rows) = execute_subquery_rows(
         subquery,
@@ -949,6 +988,7 @@ fn execute_subquery_values(
         string_comparison_mode,
         table_resolver,
         outer_context,
+        subquery_cache,
     )?;
 
     if schema.columns.len() != 1 {
@@ -970,6 +1010,7 @@ fn execute_scalar_subquery_value(
     table_resolver: &mut dyn FnMut(&TableReference) -> Result<ResolvedTableData, QueryError>,
     outer_row: &Row,
     outer_schema: &Schema,
+    subquery_cache: Option<&mut SubqueryExecutionCache>,
 ) -> Result<Value, QueryError> {
     let (schema, rows) = execute_subquery_rows(
         subquery,
@@ -977,6 +1018,7 @@ fn execute_scalar_subquery_value(
         string_comparison_mode,
         table_resolver,
         Some((outer_row, outer_schema)),
+        subquery_cache,
     )?;
 
     if schema.columns.len() != 1 {
@@ -1000,6 +1042,7 @@ fn execute_subquery_rows(
     string_comparison_mode: StringComparisonMode,
     table_resolver: &mut dyn FnMut(&TableReference) -> Result<ResolvedTableData, QueryError>,
     outer_context: Option<(&Row, &Schema)>,
+    mut subquery_cache: Option<&mut SubqueryExecutionCache>,
 ) -> Result<(Schema, Vec<Row>), QueryError> {
     let rewritten_query = if let Some((outer_row, outer_schema)) = outer_context {
         rewrite_query_with_outer_refs(subquery, outer_row, outer_schema)?
@@ -1008,6 +1051,14 @@ fn execute_subquery_rows(
     };
 
     let sql = rewritten_query.to_string();
+
+    if let Some(cached) = subquery_cache
+        .as_deref_mut()
+        .and_then(|cache| cache.rows_by_sql.get(&sql).cloned())
+    {
+        return Ok(cached);
+    }
+
     let resolved_source = if let Some(table_ref) = parser::extract_table_reference(&sql)? {
         match table_resolver(&table_ref) {
             Ok(data) => Some(InMemoryDataSource {
@@ -1045,6 +1096,13 @@ fn execute_subquery_rows(
 
     let schema = execution.schema;
     let rows = execution.rows.collect::<Vec<_>>();
+
+    if let Some(cache) = subquery_cache.as_deref_mut() {
+        cache
+            .rows_by_sql
+            .insert(sql.clone(), (schema.clone(), rows.clone()));
+    }
+
     Ok((schema, rows))
 }
 

@@ -625,3 +625,79 @@ fn executes_where_exists_correlated_inside_join_query() {
         ]
     );
 }
+
+#[test]
+fn executes_join_query_with_correlated_in_exists_and_scalar_subquery() {
+    let vehicles = MockSource {
+        schema: Schema::new(vec![
+            Column::new("codigo_modelo"),
+            Column::new("codigo_cor"),
+            Column::new("placa"),
+        ]),
+        rows: vec![
+            Row::new(vec![
+                Value::Int(1),
+                Value::Int(10),
+                Value::String("ZZZ5498".into()),
+            ]),
+            Row::new(vec![
+                Value::Int(1),
+                Value::Int(20),
+                Value::String("CRH0011".into()),
+            ]),
+        ],
+    };
+
+    let models = ResolvedTableData {
+        schema: Schema::new(vec![Column::new("codigo_modelo"), Column::new("descricao")]),
+        rows: vec![Row::new(vec![Value::Int(1), Value::String("Sedan".into())])],
+    };
+
+    let colors = ResolvedTableData {
+        schema: Schema::new(vec![Column::new("codigo_cor"), Column::new("descricao")]),
+        rows: vec![
+            Row::new(vec![Value::Int(10), Value::String("Preto".into())]),
+            Row::new(vec![Value::Int(20), Value::String("Branco".into())]),
+            Row::new(vec![Value::Int(13), Value::String("Azul".into())]),
+        ],
+    };
+
+    let engine = SqlLikeQueryEngine;
+    let result = engine
+        .execute_with_schema_and_resolver(
+            &vehicles,
+            "SELECT v.placa, m.descricao AS modelo, c.descricao AS cor, (SELECT c2.descricao FROM cores c2 WHERE c2.codigo_cor IN (v.codigo_cor, 13) ORDER BY 1 ASC LIMIT 1) AS cor3 FROM veiculos v JOIN modelos m ON v.codigo_modelo = m.codigo_modelo JOIN cores c ON c.codigo_cor = v.codigo_cor WHERE v.placa IN ('ZZZ5498', 'CRH0011', 'CRH0010') AND v.codigo_cor IN (SELECT c2.codigo_cor FROM cores c2 WHERE c2.codigo_cor = c.codigo_cor) AND EXISTS (SELECT 1 FROM cores c3 WHERE c3.codigo_cor = c.codigo_cor) ORDER BY 1 DESC LIMIT 10",
+            |table_ref| {
+                if table_ref.table.eq_ignore_ascii_case("modelos") {
+                    Ok(models.clone())
+                } else if table_ref.table.eq_ignore_ascii_case("cores") {
+                    Ok(colors.clone())
+                } else {
+                    Err(QueryError::TableResolution(table_ref.table.clone()))
+                }
+            },
+        )
+        .expect("join query should execute")
+        .rows
+        .collect::<Vec<_>>();
+
+    assert_eq!(result.len(), 2);
+    assert_eq!(
+        result[0].values,
+        vec![
+            Value::String("ZZZ5498".into()),
+            Value::String("Sedan".into()),
+            Value::String("Preto".into()),
+            Value::String("Azul".into()),
+        ]
+    );
+    assert_eq!(
+        result[1].values,
+        vec![
+            Value::String("CRH0011".into()),
+            Value::String("Sedan".into()),
+            Value::String("Branco".into()),
+            Value::String("Azul".into()),
+        ]
+    );
+}
