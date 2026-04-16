@@ -9,6 +9,12 @@ export async function refreshWorkspaceOverview(): Promise<WorkspaceOverview> {
   return invoke<WorkspaceOverview>("refresh_workspace_overview");
 }
 
+export async function setParallelEnabled(parallelEnabled: boolean): Promise<boolean> {
+  return invoke<boolean>("set_parallel_enabled", {
+    parallelEnabled
+  });
+}
+
 export async function executeSql(
   sql: string,
   caseSensitiveStrings: boolean,

@@ -9,6 +9,7 @@ import {
   executeSql,
   exportSql,
   refreshWorkspaceOverview,
+  setParallelEnabled,
   setWorkspaceFolder
 } from "./services/queryStudioApi.js";
 import type { ExportFormat, QueryResult, StatusMessage, WorkspaceOverview } from "./types/query.js";
@@ -23,6 +24,20 @@ const defaultSql = [
 const MIN_QUERY_LOADING_MS = 280;
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 250, 500];
 const SPREADSHEET_EXTENSIONS = [".xlsx", ".xlsm", ".xls", ".xlsb", ".ods"];
+const PARALLEL_PREF_KEY = "querysheets.parallelEnabled";
+
+function loadParallelPreference(): boolean {
+  if (typeof window === "undefined") {
+    return true;
+  }
+
+  const raw = window.localStorage.getItem(PARALLEL_PREF_KEY);
+  if (raw === null) {
+    return true;
+  }
+
+  return raw !== "false";
+}
 
 function isSpreadsheetFilePath(path: string): boolean {
   const lowerPath = path.toLowerCase();
@@ -84,6 +99,7 @@ export function App(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [isRunningQuery, setIsRunningQuery] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [parallelEnabled, setParallelExecutionEnabled] = useState(loadParallelPreference);
   const [isDragOverWindow, setIsDragOverWindow] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(100);
@@ -141,6 +157,20 @@ export function App(): JSX.Element {
       setStatus({ message: String(err), isError: true });
     }
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(PARALLEL_PREF_KEY, parallelEnabled ? "true" : "false");
+  }, [parallelEnabled]);
+
+  useEffect(() => {
+    void setParallelEnabled(parallelEnabled).catch((err) => {
+      setStatus({ message: `Parallel toggle unavailable: ${String(err)}`, isError: true });
+    });
+  }, [parallelEnabled]);
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
@@ -345,6 +375,14 @@ export function App(): JSX.Element {
     }
   }
 
+  function handleParallelToggle(enabled: boolean): void {
+    setParallelExecutionEnabled(enabled);
+    setStatus({
+      message: enabled ? "Parallel execution enabled" : "Parallel execution disabled",
+      isError: false
+    });
+  }
+
   return (
     <div className="relative h-screen overflow-hidden bg-[radial-gradient(circle_at_15%_20%,#eff6ff_0%,#f8fafc_35%,#fff7ed_100%)] text-slate-900">
       <div className="mx-auto grid h-full max-w-[1500px] min-h-0 grid-cols-1 gap-4 px-4 py-4 lg:grid-cols-[320px_minmax(0,1fr)] lg:px-6 lg:py-6">
@@ -356,6 +394,8 @@ export function App(): JSX.Element {
             onOpenFolder={handleOpenFolder}
             onRefresh={handleRefreshWorkspace}
             onRunQuery={handleRunQuery}
+            onParallelToggle={handleParallelToggle}
+            parallelEnabled={parallelEnabled}
             isBusy={isBusy}
             isRunning={isRunningQuery}
           />

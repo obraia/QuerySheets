@@ -5,6 +5,14 @@ use sqlparser::ast::{
 };
 use std::collections::{HashMap, HashSet};
 
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
+#[cfg(feature = "parallel")]
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+
+#[cfg(feature = "parallel")]
+static PARALLEL_EXECUTION_ENABLED: AtomicBool = AtomicBool::new(true);
+
 mod aggregation;
 mod errors;
 mod expr;
@@ -41,6 +49,23 @@ impl StringComparisonMode {
             Self::CaseInsensitive
         }
     }
+}
+
+pub fn set_parallel_execution_enabled(enabled: bool) {
+    #[cfg(feature = "parallel")]
+    {
+        PARALLEL_EXECUTION_ENABLED.store(enabled, AtomicOrdering::Relaxed);
+    }
+
+    #[cfg(not(feature = "parallel"))]
+    {
+        let _ = enabled;
+    }
+}
+
+#[cfg(feature = "parallel")]
+pub(crate) fn parallel_execution_enabled() -> bool {
+    PARALLEL_EXECUTION_ENABLED.load(AtomicOrdering::Relaxed)
 }
 
 pub trait QueryEngine {
@@ -1771,6 +1796,46 @@ fn execute_hash_join_build_right(
     let right_null_padding = vec![Value::Null; right_schema.columns.len()];
     let mut right_matched = vec![false; right_rows.len()];
 
+    #[cfg(feature = "parallel")]
+    {
+        const PARALLEL_HASH_JOIN_THRESHOLD: usize = 4_096;
+
+        if parallel_execution_enabled()
+            && matches!(join_kind, SupportedJoinKind::Inner)
+            && combined_rows.len() >= PARALLEL_HASH_JOIN_THRESHOLD
+        {
+            let partials = combined_rows
+                .par_iter()
+                .map(|left_row| {
+                    let value = left_row.values.get(plan.left_key_index).unwrap_or(&Value::Null);
+                    let key = to_hash_join_key(value, plan.key_kind, string_comparison_mode)?;
+                    let mut local_rows = Vec::new();
+
+                    if let Some(key) = key {
+                        if let Some(right_indexes) = right_index_by_key.get(&key) {
+                            local_rows.reserve(right_indexes.len());
+
+                            for right_idx in right_indexes {
+                                let right_row = &right_rows[*right_idx];
+                                let mut values = left_row.values.clone();
+                                values.extend(right_row.values.iter().cloned());
+                                local_rows.push(Row::new(values));
+                            }
+                        }
+                    }
+
+                    Ok(local_rows)
+                })
+                .collect::<Vec<Result<Vec<Row>, QueryError>>>();
+
+            for chunk in partials {
+                merged_rows.extend(chunk?);
+            }
+
+            return Ok(merged_rows);
+        }
+    }
+
     for left_row in combined_rows {
         let value = left_row.values.get(plan.left_key_index).unwrap_or(&Value::Null);
         let key = to_hash_join_key(value, plan.key_kind, string_comparison_mode)?;
@@ -1824,6 +1889,44 @@ fn execute_hash_join_build_left_inner(
         let key = to_hash_join_key(value, plan.key_kind, string_comparison_mode)?;
         if let Some(key) = key {
             left_index_by_key.entry(key).or_default().push(idx);
+        }
+    }
+
+    #[cfg(feature = "parallel")]
+    {
+        const PARALLEL_HASH_JOIN_THRESHOLD: usize = 4_096;
+
+        if parallel_execution_enabled() && right_rows.len() >= PARALLEL_HASH_JOIN_THRESHOLD {
+            let partials = right_rows
+                .par_iter()
+                .map(|right_row| {
+                    let value = right_row.values.get(plan.right_key_index).unwrap_or(&Value::Null);
+                    let key = to_hash_join_key(value, plan.key_kind, string_comparison_mode)?;
+                    let mut local_rows = Vec::new();
+
+                    if let Some(key) = key {
+                        if let Some(left_indexes) = left_index_by_key.get(&key) {
+                            local_rows.reserve(left_indexes.len());
+
+                            for left_idx in left_indexes {
+                                let left_row = &combined_rows[*left_idx];
+                                let mut values = left_row.values.clone();
+                                values.extend(right_row.values.iter().cloned());
+                                local_rows.push(Row::new(values));
+                            }
+                        }
+                    }
+
+                    Ok(local_rows)
+                })
+                .collect::<Vec<Result<Vec<Row>, QueryError>>>();
+
+            let mut merged_rows = Vec::new();
+            for chunk in partials {
+                merged_rows.extend(chunk?);
+            }
+
+            return Ok(merged_rows);
         }
     }
 

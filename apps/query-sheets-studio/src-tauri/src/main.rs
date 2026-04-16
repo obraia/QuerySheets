@@ -5,7 +5,7 @@ use query_sheets_adapters::create_excel_source;
 use query_sheets_core::{DataSource, Row, Schema, Value};
 use query_sheets_query::{
     QueryEngine, QueryError, ResolvedTableData, SqlLikeQueryEngine, TableReference,
-    extract_table_reference,
+    extract_table_reference, set_parallel_execution_enabled,
 };
 use serde::Serialize;
 use std::collections::HashMap;
@@ -246,9 +246,34 @@ struct WorkspaceState {
     catalog: FolderCatalog,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct AppState {
     workspace: Option<WorkspaceState>,
+    parallel_enabled: bool,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            workspace: None,
+            parallel_enabled: true,
+        }
+    }
+}
+
+#[tauri::command]
+fn set_parallel_enabled(
+    parallel_enabled: bool,
+    state: tauri::State<'_, Mutex<AppState>>,
+) -> Result<bool, String> {
+    let mut guard = state
+        .lock()
+        .map_err(|_| "internal state lock poisoned".to_string())?;
+
+    guard.parallel_enabled = parallel_enabled;
+    set_parallel_execution_enabled(parallel_enabled);
+
+    Ok(parallel_enabled)
 }
 
 #[tauri::command]
@@ -312,6 +337,9 @@ fn execute_sql(
     let mut guard = state
         .lock()
         .map_err(|_| "internal state lock poisoned".to_string())?;
+
+    let parallel_enabled = guard.parallel_enabled;
+    set_parallel_execution_enabled(parallel_enabled);
 
     let workspace = guard
         .workspace
@@ -392,6 +420,9 @@ fn export_sql(
     let mut guard = state
         .lock()
         .map_err(|_| "internal state lock poisoned".to_string())?;
+
+    let parallel_enabled = guard.parallel_enabled;
+    set_parallel_execution_enabled(parallel_enabled);
 
     let workspace = guard
         .workspace
@@ -666,6 +697,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             set_workspace_folder,
             refresh_workspace_overview,
+            set_parallel_enabled,
             execute_sql,
             export_sql
         ])

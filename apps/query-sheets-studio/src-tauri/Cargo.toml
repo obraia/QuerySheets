@@ -12,7 +12,7 @@ tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 calamine = "0.31"
 query-sheets-adapters = { path = "../../../crates/adapters" }
-query-sheets-query = { path = "../../../crates/query" }
+query-sheets-query = { path = "../../../crates/query", features = ["parallel"] }
 query-sheets-core = { path = "../../../crates/core" }
 csv = "1"
 serde_json = "1"

@@ -3,6 +3,8 @@ type TitleBarProps = {
   onOpenFolder: () => Promise<void>;
   onRefresh: () => Promise<void>;
   onRunQuery: () => Promise<void>;
+  onParallelToggle: (enabled: boolean) => void;
+  parallelEnabled: boolean;
   isBusy: boolean;
   isRunning: boolean;
 };
@@ -12,6 +14,8 @@ export function TitleBar({
   onOpenFolder,
   onRefresh,
   onRunQuery,
+  onParallelToggle,
+  parallelEnabled,
   isBusy,
   isRunning
 }: TitleBarProps): JSX.Element {
@@ -26,7 +30,17 @@ export function TitleBar({
           </p>
         </div>
 
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700">
+            <input
+              type="checkbox"
+              className="h-4 w-4 accent-teal-600"
+              checked={parallelEnabled}
+              onChange={(event) => onParallelToggle(event.target.checked)}
+              disabled={isBusy}
+            />
+            Parallel
+          </label>
           <button
             type="button"
             className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-teal-300 hover:text-teal-700"

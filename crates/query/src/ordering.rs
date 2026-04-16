@@ -2,9 +2,14 @@ use crate::expr::{eval_predicate, eval_value};
 use crate::projection::{ProjectionItem, project_row};
 use crate::text::compare_text_case_insensitive;
 use crate::{QueryError, QueryExecution, StringComparisonMode};
+#[cfg(feature = "parallel")]
+use crate::parallel_execution_enabled;
 use query_sheets_core::{DataSource, Row, Schema, Value};
 use sqlparser::ast::{Expr, OrderByExpr, UnaryOperator, Value as SqlValue};
 use std::cmp::Ordering;
+
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
 
 pub(crate) fn execute_select_with_order_by<'a>(
     source: &'a dyn DataSource,
@@ -41,9 +46,7 @@ pub(crate) fn execute_select_with_order_by<'a>(
         .collect::<Result<Vec<_>, _>>()?;
 
     validate_order_by_types(order_by, &sortable_rows)?;
-    sortable_rows.sort_by(|left, right| {
-        compare_sortable_rows(left, right, order_by, string_comparison_mode)
-    });
+    sort_sortable_rows(&mut sortable_rows, order_by, string_comparison_mode);
 
     let rows = sortable_rows.into_iter().map(|sortable| sortable.row);
     Ok(QueryExecution {
@@ -67,10 +70,7 @@ pub(crate) fn apply_order_by_to_execution<'a>(
         .collect::<Result<Vec<_>, _>>()?;
 
     validate_order_by_types(order_by, &sortable_rows)?;
-
-    sortable_rows.sort_by(|left, right| {
-        compare_sortable_rows(left, right, order_by, string_comparison_mode)
-    });
+    sort_sortable_rows(&mut sortable_rows, order_by, string_comparison_mode);
 
     let rows = sortable_rows.into_iter().map(|sortable| sortable.row);
     Ok(QueryExecution {
@@ -111,9 +111,7 @@ pub(crate) fn order_projected_rows_with_source_fallback(
         .collect::<Result<Vec<_>, QueryError>>()?;
 
     validate_order_by_types(order_by, &sortable_rows)?;
-    sortable_rows.sort_by(|left, right| {
-        compare_sortable_rows(left, right, order_by, string_comparison_mode)
-    });
+    sort_sortable_rows(&mut sortable_rows, order_by, string_comparison_mode);
 
     Ok(sortable_rows
         .into_iter()
@@ -129,6 +127,27 @@ fn build_sortable_row(
     let keys = build_order_by_keys(&row, schema, None, order_by)?;
 
     Ok(SortableRow { row, keys })
+}
+
+fn sort_sortable_rows(
+    sortable_rows: &mut [SortableRow],
+    order_by: &[OrderByExpr],
+    string_comparison_mode: StringComparisonMode,
+) {
+    #[cfg(feature = "parallel")]
+    {
+        const PARALLEL_SORT_THRESHOLD: usize = 4_096;
+
+        if parallel_execution_enabled() && sortable_rows.len() >= PARALLEL_SORT_THRESHOLD {
+            sortable_rows.par_sort_by(|left, right| {
+                compare_sortable_rows(left, right, order_by, string_comparison_mode)
+            });
+            return;
+        }
+    }
+
+    sortable_rows
+        .sort_by(|left, right| compare_sortable_rows(left, right, order_by, string_comparison_mode));
 }
 
 fn build_sortable_projected_row(

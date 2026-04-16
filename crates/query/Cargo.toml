@@ -4,7 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+parallel = ["dep:rayon"]
+
 [dependencies]
 query-sheets-core = { path = "../core" }
 sqlparser = { workspace = true }
 thiserror = { workspace = true }
+rayon = { workspace = true, optional = true }
