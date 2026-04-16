@@ -10,6 +10,11 @@ export function ResultsPanel({ result, resultMeta, error }: ResultsPanelProps): 
   const columns = result?.columns ?? [];
   const rows = result?.rows ?? [];
 
+  const displayColumnName = (column: string): string => {
+    const normalized = column.trim();
+    return normalized.length > 0 ? normalized : "(unnamed)";
+  };
+
   return (
     <section className="grid min-h-[260px] grid-rows-[auto_auto_minmax(0,1fr)] rounded-2xl border border-slate-200/70 bg-white/90 shadow-[0_16px_40px_-26px_rgba(15,23,42,0.45)] backdrop-blur-md">
       <header className="flex items-center justify-between border-b border-slate-100 px-4 py-3 lg:px-5">
@@ -40,14 +45,19 @@ export function ResultsPanel({ result, resultMeta, error }: ResultsPanelProps): 
           <table className="min-w-full border-collapse overflow-hidden rounded-xl text-left text-xs">
             <thead>
               <tr>
-                {columns.map((column) => (
-                  <th
-                    key={column}
-                    className="sticky top-0 z-10 border border-slate-200 bg-gradient-to-r from-teal-50 to-cyan-50 px-3 py-2 font-semibold text-slate-700"
-                  >
-                    {column}
-                  </th>
-                ))}
+                {columns.map((column, index) => {
+                  const label = displayColumnName(column);
+
+                  return (
+                    <th
+                      key={`column-${index}-${column}`}
+                      title={label}
+                      className="sticky top-0 z-10 border border-slate-200 bg-gradient-to-r from-teal-50 to-cyan-50 px-3 py-2 font-semibold text-slate-700"
+                    >
+                      <span className="block max-w-[280px] truncate whitespace-nowrap">{label}</span>
+                    </th>
+                  );
+                })}
               </tr>
             </thead>
 

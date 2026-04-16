@@ -1,15 +1,15 @@
 import { lazy, Suspense, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { ExplorerPanel } from "./components/ExplorerPanel";
-import { ResultsPanel } from "./components/ResultsPanel";
-import { StatusBar } from "./components/StatusBar";
-import { TitleBar } from "./components/TitleBar";
+import { ExplorerPanel } from "./components/ExplorerPanel.js";
+import { ResultsPanel } from "./components/ResultsPanel.js";
+import { StatusBar } from "./components/StatusBar.js";
+import { TitleBar } from "./components/TitleBar.js";
 import {
   executeSql,
   refreshWorkspaceOverview,
   setWorkspaceFolder
-} from "./services/queryStudioApi";
-import type { QueryResult, StatusMessage, WorkspaceOverview } from "./types/query";
+} from "./services/queryStudioApi.js";
+import type { QueryResult, StatusMessage, WorkspaceOverview } from "./types/query.js";
 
 const defaultSql = [
   "SELECT c.CustomerName, o.Amount",
@@ -19,7 +19,7 @@ const defaultSql = [
 ].join("\n");
 
 const SqlEditorPanel = lazy(async () => {
-  const module = await import("./components/SqlEditorPanel");
+  const module = await import("./components/SqlEditorPanel.js");
   return { default: module.SqlEditorPanel };
 });
 
