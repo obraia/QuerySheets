@@ -22,6 +22,8 @@ pub enum QueryError {
     UnsupportedWhere(String),
     #[error("ambiguous column reference: {0}")]
     AmbiguousColumn(String),
+    #[error("invalid JOIN condition: {0}")]
+    InvalidJoinCondition(String),
     #[error("failed to resolve table for query: {0}")]
     TableResolution(String),
 }

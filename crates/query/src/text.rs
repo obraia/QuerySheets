@@ -8,6 +8,14 @@ pub(crate) fn compare_text_case_insensitive(left: &str, right: &str) -> Ordering
     compare_unicode_case_insensitive(left, right)
 }
 
+pub(crate) fn normalize_text_case_insensitive(value: &str) -> String {
+    if value.is_ascii() {
+        return value.to_ascii_lowercase();
+    }
+
+    value.chars().flat_map(|ch| ch.to_lowercase()).collect()
+}
+
 fn compare_ascii_case_insensitive(left: &[u8], right: &[u8]) -> Ordering {
     let shared = left.len().min(right.len());
 

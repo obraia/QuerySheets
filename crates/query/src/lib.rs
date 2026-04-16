@@ -1,5 +1,6 @@
 use query_sheets_core::{DataSource, Row, Schema, Value};
-use sqlparser::ast::{Expr, JoinConstraint, JoinOperator, Select, TableFactor};
+use sqlparser::ast::{BinaryOperator, Expr, JoinConstraint, JoinOperator, Select, TableFactor};
+use std::collections::{HashMap, HashSet};
 
 mod aggregation;
 mod errors;
@@ -15,9 +16,10 @@ pub use parser::{TableReference, extract_table_name, extract_table_reference};
 use aggregation::{
     build_group_by_aggregation_plan, execute_group_by_aggregation, extract_group_by_column_indexes,
 };
-use expr::eval_predicate;
+use expr::{eval_predicate, resolve_column, resolve_compound_column};
 use ordering::{apply_order_by_to_execution, execute_select_with_order_by};
 use projection::{build_projection, project_row};
+use text::normalize_text_case_insensitive;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StringComparisonMode {
@@ -284,6 +286,7 @@ where
     F: FnMut(&TableReference) -> Result<ResolvedTableData, QueryError>,
 {
     let from = select.from.first().ok_or(QueryError::MissingFrom)?;
+    let pushdown_predicates = extract_alias_pushdown_predicates(select.selection.as_ref());
 
     let (base_ref, base_alias) = parse_table_factor_reference(&from.relation)?;
     let base_relation = ResolvedTableData {
@@ -292,7 +295,16 @@ where
     };
 
     let mut combined_schema = qualify_schema_columns(&base_relation.schema, &base_alias);
-    let mut combined_rows = base_relation.rows;
+    let mut combined_rows = if let Some(predicates) = pushdown_predicates.get(&base_alias.to_ascii_lowercase()) {
+        filter_rows_with_predicates(
+            base_relation.rows,
+            &combined_schema,
+            predicates,
+            string_comparison_mode,
+        )?
+    } else {
+        base_relation.rows
+    };
 
     let _ = base_ref;
 
@@ -300,6 +312,16 @@ where
         let (join_ref, join_alias) = parse_table_factor_reference(&join.relation)?;
         let right_relation = table_resolver(&join_ref)?;
         let right_schema = qualify_schema_columns(&right_relation.schema, &join_alias);
+        let right_rows = if let Some(predicates) = pushdown_predicates.get(&join_alias.to_ascii_lowercase()) {
+            filter_rows_with_predicates(
+                right_relation.rows,
+                &right_schema,
+                predicates,
+                string_comparison_mode,
+            )?
+        } else {
+            right_relation.rows
+        };
         let supported_join = supported_join_constraint_expr(&join.join_operator)?;
 
         let merged_schema = Schema::new(
@@ -311,49 +333,34 @@ where
                 .collect::<Vec<_>>(),
         );
 
-        let mut merged_rows = Vec::new();
-        let left_null_padding = vec![Value::Null; combined_schema.columns.len()];
-        let right_null_padding = vec![Value::Null; right_schema.columns.len()];
-        let mut right_matched = vec![false; right_relation.rows.len()];
-
-        for left_row in &combined_rows {
-            let mut matched = false;
-
-            for (right_idx, right_row) in right_relation.rows.iter().enumerate() {
-                let mut values = left_row.values.clone();
-                values.extend(right_row.values.iter().cloned());
-                let candidate = Row::new(values);
-
-                if eval_predicate(
-                    supported_join.constraint_expr,
-                    &candidate,
-                    &merged_schema,
-                    string_comparison_mode,
-                )? {
-                    matched = true;
-                    right_matched[right_idx] = true;
-                    merged_rows.push(candidate);
-                }
-            }
-
-            if matches!(supported_join.kind, SupportedJoinKind::LeftOuter) && !matched {
-                let mut values = left_row.values.clone();
-                values.extend(right_null_padding.iter().cloned());
-                merged_rows.push(Row::new(values));
-            }
-        }
-
-        if matches!(supported_join.kind, SupportedJoinKind::RightOuter) {
-            for (right_idx, right_row) in right_relation.rows.iter().enumerate() {
-                if right_matched[right_idx] {
-                    continue;
-                }
-
-                let mut values = left_null_padding.clone();
-                values.extend(right_row.values.iter().cloned());
-                merged_rows.push(Row::new(values));
-            }
-        }
+        let merged_rows = if let Some(plan) = try_build_hash_join_plan(
+            supported_join.constraint_expr,
+            &merged_schema,
+            combined_schema.columns.len(),
+            right_schema.columns.len(),
+            &combined_rows,
+            &right_rows,
+        )? {
+            execute_hash_join(
+                &combined_rows,
+                &right_rows,
+                &combined_schema,
+                &right_schema,
+                plan,
+                supported_join.kind,
+                string_comparison_mode,
+            )?
+        } else {
+            execute_nested_loop_join(
+                &combined_rows,
+                &right_rows,
+                &combined_schema,
+                &right_schema,
+                &merged_schema,
+                supported_join,
+                string_comparison_mode,
+            )?
+        };
 
         combined_schema = merged_schema;
         combined_rows = merged_rows;
@@ -363,6 +370,486 @@ where
         schema: combined_schema,
         rows: combined_rows,
     })
+}
+
+fn filter_rows_with_predicates(
+    rows: Vec<Row>,
+    schema: &Schema,
+    predicates: &[Expr],
+    string_comparison_mode: StringComparisonMode,
+) -> Result<Vec<Row>, QueryError> {
+    if predicates.is_empty() {
+        return Ok(rows);
+    }
+
+    let mut filtered = Vec::with_capacity(rows.len());
+
+    for row in rows {
+        let mut keep = true;
+
+        for predicate in predicates {
+            if !eval_predicate(predicate, &row, schema, string_comparison_mode)? {
+                keep = false;
+                break;
+            }
+        }
+
+        if keep {
+            filtered.push(row);
+        }
+    }
+
+    Ok(filtered)
+}
+
+fn extract_alias_pushdown_predicates(selection: Option<&Expr>) -> HashMap<String, Vec<Expr>> {
+    let Some(selection) = selection else {
+        return HashMap::new();
+    };
+
+    let mut predicates_by_alias: HashMap<String, Vec<Expr>> = HashMap::new();
+    let mut conjuncts = Vec::new();
+    collect_and_conjuncts(selection, &mut conjuncts);
+
+    for conjunct in conjuncts {
+        let Some(alias) = pushdown_alias_for_predicate(conjunct) else {
+            continue;
+        };
+
+        predicates_by_alias
+            .entry(alias)
+            .or_default()
+            .push(conjunct.clone());
+    }
+
+    predicates_by_alias
+}
+
+fn collect_and_conjuncts<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>) {
+    if let Expr::BinaryOp {
+        left,
+        op: BinaryOperator::And,
+        right,
+    } = expr
+    {
+        collect_and_conjuncts(left, out);
+        collect_and_conjuncts(right, out);
+        return;
+    }
+
+    out.push(expr);
+}
+
+fn pushdown_alias_for_predicate(expr: &Expr) -> Option<String> {
+    let mut qualifiers = HashSet::new();
+
+    if !collect_predicate_qualifiers(expr, &mut qualifiers) {
+        return None;
+    }
+
+    if qualifiers.len() != 1 {
+        return None;
+    }
+
+    qualifiers.into_iter().next()
+}
+
+fn collect_predicate_qualifiers(expr: &Expr, qualifiers: &mut HashSet<String>) -> bool {
+    match expr {
+        Expr::CompoundIdentifier(identifiers) => {
+            if identifiers.len() < 2 {
+                return false;
+            }
+
+            qualifiers.insert(identifiers[identifiers.len() - 2].value.to_ascii_lowercase());
+            true
+        }
+        Expr::Identifier(_) => false,
+        Expr::BinaryOp { left, right, .. } => {
+            collect_predicate_qualifiers(left, qualifiers)
+                && collect_predicate_qualifiers(right, qualifiers)
+        }
+        Expr::Nested(inner) => collect_predicate_qualifiers(inner, qualifiers),
+        Expr::UnaryOp { expr: inner, .. } => collect_predicate_qualifiers(inner, qualifiers),
+        Expr::Cast { expr: inner, .. } => collect_predicate_qualifiers(inner, qualifiers),
+        Expr::Value(_) => true,
+        _ => false,
+    }
+}
+
+fn execute_nested_loop_join(
+    combined_rows: &[Row],
+    right_rows: &[Row],
+    combined_schema: &Schema,
+    right_schema: &Schema,
+    merged_schema: &Schema,
+    supported_join: SupportedJoin<'_>,
+    string_comparison_mode: StringComparisonMode,
+) -> Result<Vec<Row>, QueryError> {
+    let mut merged_rows = Vec::new();
+    let left_null_padding = vec![Value::Null; combined_schema.columns.len()];
+    let right_null_padding = vec![Value::Null; right_schema.columns.len()];
+    let mut right_matched = vec![false; right_rows.len()];
+
+    for left_row in combined_rows {
+        let mut matched = false;
+
+        for (right_idx, right_row) in right_rows.iter().enumerate() {
+            let mut values = left_row.values.clone();
+            values.extend(right_row.values.iter().cloned());
+            let candidate = Row::new(values);
+
+            if eval_predicate(
+                supported_join.constraint_expr,
+                &candidate,
+                merged_schema,
+                string_comparison_mode,
+            )? {
+                matched = true;
+                right_matched[right_idx] = true;
+                merged_rows.push(candidate);
+            }
+        }
+
+        if matches!(supported_join.kind, SupportedJoinKind::LeftOuter) && !matched {
+            let mut values = left_row.values.clone();
+            values.extend(right_null_padding.iter().cloned());
+            merged_rows.push(Row::new(values));
+        }
+    }
+
+    if matches!(supported_join.kind, SupportedJoinKind::RightOuter) {
+        for (right_idx, right_row) in right_rows.iter().enumerate() {
+            if right_matched[right_idx] {
+                continue;
+            }
+
+            let mut values = left_null_padding.clone();
+            values.extend(right_row.values.iter().cloned());
+            merged_rows.push(Row::new(values));
+        }
+    }
+
+    Ok(merged_rows)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HashJoinValueKind {
+    Numeric,
+    String,
+    Bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum HashJoinKey {
+    Numeric(u64),
+    String(String),
+    Bool(bool),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HashJoinPlan {
+    left_key_index: usize,
+    right_key_index: usize,
+    key_kind: HashJoinValueKind,
+}
+
+fn try_build_hash_join_plan(
+    constraint_expr: &Expr,
+    merged_schema: &Schema,
+    left_column_count: usize,
+    right_column_count: usize,
+    left_rows: &[Row],
+    right_rows: &[Row],
+) -> Result<Option<HashJoinPlan>, QueryError> {
+    let Some((left_idx, right_idx)) = extract_equi_join_key_indexes(
+        constraint_expr,
+        merged_schema,
+        left_column_count,
+        right_column_count,
+    )? else {
+        return Ok(None);
+    };
+
+    let left_kind = analyze_hash_join_column_kind(left_rows, left_idx)?;
+    let right_kind = analyze_hash_join_column_kind(right_rows, right_idx)?;
+
+    let key_kind = match (left_kind, right_kind) {
+        (Some(kind), Some(other)) if kind == other => kind,
+        (Some(kind), None) | (None, Some(kind)) => kind,
+        _ => return Ok(None),
+    };
+
+    Ok(Some(HashJoinPlan {
+        left_key_index: left_idx,
+        right_key_index: right_idx,
+        key_kind,
+    }))
+}
+
+fn extract_equi_join_key_indexes(
+    constraint_expr: &Expr,
+    merged_schema: &Schema,
+    left_column_count: usize,
+    right_column_count: usize,
+) -> Result<Option<(usize, usize)>, QueryError> {
+    let Expr::BinaryOp {
+        left,
+        op: BinaryOperator::Eq,
+        right,
+    } = constraint_expr
+    else {
+        return Ok(None);
+    };
+
+    let left_idx = resolve_join_column_index(left, merged_schema)?;
+    let right_idx = resolve_join_column_index(right, merged_schema)?;
+
+    let (Some(left_idx), Some(right_idx)) = (left_idx, right_idx) else {
+        return Ok(None);
+    };
+
+    let right_boundary = left_column_count + right_column_count;
+    let left_on_left = left_idx < left_column_count;
+    let left_on_right = left_idx >= left_column_count && left_idx < right_boundary;
+    let right_on_left = right_idx < left_column_count;
+    let right_on_right = right_idx >= left_column_count && right_idx < right_boundary;
+
+    if left_on_left && right_on_right {
+        return Ok(Some((left_idx, right_idx - left_column_count)));
+    }
+
+    if right_on_left && left_on_right {
+        return Ok(Some((right_idx, left_idx - left_column_count)));
+    }
+
+    Ok(None)
+}
+
+fn resolve_join_column_index(expr: &Expr, schema: &Schema) -> Result<Option<usize>, QueryError> {
+    match expr {
+        Expr::Identifier(identifier) => Ok(Some(resolve_column(schema, identifier)?)),
+        Expr::CompoundIdentifier(identifiers) => {
+            Ok(Some(resolve_compound_column(schema, identifiers)?))
+        }
+        Expr::Nested(inner) => resolve_join_column_index(inner, schema),
+        _ => Ok(None),
+    }
+}
+
+fn analyze_hash_join_column_kind(
+    rows: &[Row],
+    index: usize,
+) -> Result<Option<HashJoinValueKind>, QueryError> {
+    let mut detected: Option<HashJoinValueKind> = None;
+
+    for row in rows {
+        let value = row.values.get(index).unwrap_or(&Value::Null);
+        let candidate = match value {
+            Value::Int(_) => HashJoinValueKind::Numeric,
+            Value::Float(v) => {
+                if v.is_nan() {
+                    return Ok(None);
+                }
+
+                HashJoinValueKind::Numeric
+            }
+            Value::String(_) => HashJoinValueKind::String,
+            Value::Bool(_) => HashJoinValueKind::Bool,
+            Value::Null => continue,
+        };
+
+        match detected {
+            Some(existing) if existing != candidate => return Ok(None),
+            Some(_) => {}
+            None => detected = Some(candidate),
+        }
+    }
+
+    Ok(detected)
+}
+
+fn execute_hash_join(
+    combined_rows: &[Row],
+    right_rows: &[Row],
+    combined_schema: &Schema,
+    right_schema: &Schema,
+    plan: HashJoinPlan,
+    join_kind: SupportedJoinKind,
+    string_comparison_mode: StringComparisonMode,
+) -> Result<Vec<Row>, QueryError> {
+    if !matches!(join_kind, SupportedJoinKind::Inner) {
+        return execute_hash_join_build_right(
+            combined_rows,
+            right_rows,
+            combined_schema,
+            right_schema,
+            plan,
+            join_kind,
+            string_comparison_mode,
+        );
+    }
+
+    if combined_rows.len() <= right_rows.len() {
+        return execute_hash_join_build_left_inner(
+            combined_rows,
+            right_rows,
+            plan,
+            string_comparison_mode,
+        );
+    }
+
+    execute_hash_join_build_right(
+        combined_rows,
+        right_rows,
+        combined_schema,
+        right_schema,
+        plan,
+        join_kind,
+        string_comparison_mode,
+    )
+}
+
+fn execute_hash_join_build_right(
+    combined_rows: &[Row],
+    right_rows: &[Row],
+    combined_schema: &Schema,
+    right_schema: &Schema,
+    plan: HashJoinPlan,
+    join_kind: SupportedJoinKind,
+    string_comparison_mode: StringComparisonMode,
+) -> Result<Vec<Row>, QueryError> {
+    let mut right_index_by_key: HashMap<HashJoinKey, Vec<usize>> = HashMap::new();
+
+    for (idx, right_row) in right_rows.iter().enumerate() {
+        let value = right_row.values.get(plan.right_key_index).unwrap_or(&Value::Null);
+        let key = to_hash_join_key(value, plan.key_kind, string_comparison_mode)?;
+        if let Some(key) = key {
+            right_index_by_key.entry(key).or_default().push(idx);
+        }
+    }
+
+    let mut merged_rows = Vec::new();
+    let left_null_padding = vec![Value::Null; combined_schema.columns.len()];
+    let right_null_padding = vec![Value::Null; right_schema.columns.len()];
+    let mut right_matched = vec![false; right_rows.len()];
+
+    for left_row in combined_rows {
+        let value = left_row.values.get(plan.left_key_index).unwrap_or(&Value::Null);
+        let key = to_hash_join_key(value, plan.key_kind, string_comparison_mode)?;
+
+        let mut matched = false;
+        if let Some(key) = key {
+            if let Some(right_indexes) = right_index_by_key.get(&key) {
+                for right_idx in right_indexes {
+                    let right_row = &right_rows[*right_idx];
+                    let mut values = left_row.values.clone();
+                    values.extend(right_row.values.iter().cloned());
+                    merged_rows.push(Row::new(values));
+                    matched = true;
+                    right_matched[*right_idx] = true;
+                }
+            }
+        }
+
+        if matches!(join_kind, SupportedJoinKind::LeftOuter) && !matched {
+            let mut values = left_row.values.clone();
+            values.extend(right_null_padding.iter().cloned());
+            merged_rows.push(Row::new(values));
+        }
+    }
+
+    if matches!(join_kind, SupportedJoinKind::RightOuter) {
+        for (right_idx, right_row) in right_rows.iter().enumerate() {
+            if right_matched[right_idx] {
+                continue;
+            }
+
+            let mut values = left_null_padding.clone();
+            values.extend(right_row.values.iter().cloned());
+            merged_rows.push(Row::new(values));
+        }
+    }
+
+    Ok(merged_rows)
+}
+
+fn execute_hash_join_build_left_inner(
+    combined_rows: &[Row],
+    right_rows: &[Row],
+    plan: HashJoinPlan,
+    string_comparison_mode: StringComparisonMode,
+) -> Result<Vec<Row>, QueryError> {
+    let mut left_index_by_key: HashMap<HashJoinKey, Vec<usize>> = HashMap::new();
+
+    for (idx, left_row) in combined_rows.iter().enumerate() {
+        let value = left_row.values.get(plan.left_key_index).unwrap_or(&Value::Null);
+        let key = to_hash_join_key(value, plan.key_kind, string_comparison_mode)?;
+        if let Some(key) = key {
+            left_index_by_key.entry(key).or_default().push(idx);
+        }
+    }
+
+    let mut merged_rows = Vec::new();
+
+    for right_row in right_rows {
+        let value = right_row.values.get(plan.right_key_index).unwrap_or(&Value::Null);
+        let key = to_hash_join_key(value, plan.key_kind, string_comparison_mode)?;
+
+        if let Some(key) = key {
+            if let Some(left_indexes) = left_index_by_key.get(&key) {
+                for left_idx in left_indexes {
+                    let left_row = &combined_rows[*left_idx];
+                    let mut values = left_row.values.clone();
+                    values.extend(right_row.values.iter().cloned());
+                    merged_rows.push(Row::new(values));
+                }
+            }
+        }
+    }
+
+    Ok(merged_rows)
+}
+
+fn to_hash_join_key(
+    value: &Value,
+    kind: HashJoinValueKind,
+    string_comparison_mode: StringComparisonMode,
+) -> Result<Option<HashJoinKey>, QueryError> {
+    match (kind, value) {
+        (HashJoinValueKind::Numeric, Value::Int(v)) => {
+            Ok(Some(HashJoinKey::Numeric(normalize_numeric_bits(*v as f64))))
+        }
+        (HashJoinValueKind::Numeric, Value::Float(v)) => {
+            if v.is_nan() {
+                return Err(QueryError::InvalidJoinCondition(
+                    "hash join key has NaN value".to_string(),
+                ));
+            }
+
+            Ok(Some(HashJoinKey::Numeric(normalize_numeric_bits(*v))))
+        }
+        (HashJoinValueKind::Numeric, Value::Null)
+        | (HashJoinValueKind::String, Value::Null)
+        | (HashJoinValueKind::Bool, Value::Null) => Ok(None),
+        (HashJoinValueKind::String, Value::String(v)) => {
+            let text = match string_comparison_mode {
+                StringComparisonMode::CaseInsensitive => normalize_text_case_insensitive(v),
+                StringComparisonMode::CaseSensitive => v.clone(),
+            };
+
+            Ok(Some(HashJoinKey::String(text)))
+        }
+        (HashJoinValueKind::Bool, Value::Bool(v)) => Ok(Some(HashJoinKey::Bool(*v))),
+        _ => Err(QueryError::InvalidJoinCondition(
+            "hash join key has unsupported or mixed value types".to_string(),
+        )),
+    }
+}
+
+fn normalize_numeric_bits(value: f64) -> u64 {
+    let normalized = if value == 0.0 { 0.0 } else { value };
+    normalized.to_bits()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -380,22 +867,73 @@ struct SupportedJoin<'a> {
 
 fn supported_join_constraint_expr(join_operator: &JoinOperator) -> Result<SupportedJoin<'_>, QueryError> {
     match join_operator {
-        JoinOperator::Inner(JoinConstraint::On(expr)) => Ok(SupportedJoin {
-            kind: SupportedJoinKind::Inner,
-            constraint_expr: expr,
-        }),
-        JoinOperator::LeftOuter(JoinConstraint::On(expr)) => Ok(SupportedJoin {
-            kind: SupportedJoinKind::LeftOuter,
-            constraint_expr: expr,
-        }),
-        JoinOperator::RightOuter(JoinConstraint::On(expr)) => Ok(SupportedJoin {
-            kind: SupportedJoinKind::RightOuter,
-            constraint_expr: expr,
-        }),
+        JoinOperator::Inner(JoinConstraint::On(expr)) => {
+            validate_join_constraint_expr(expr)?;
+
+            Ok(SupportedJoin {
+                kind: SupportedJoinKind::Inner,
+                constraint_expr: expr,
+            })
+        }
+        JoinOperator::LeftOuter(JoinConstraint::On(expr)) => {
+            validate_join_constraint_expr(expr)?;
+
+            Ok(SupportedJoin {
+                kind: SupportedJoinKind::LeftOuter,
+                constraint_expr: expr,
+            })
+        }
+        JoinOperator::RightOuter(JoinConstraint::On(expr)) => {
+            validate_join_constraint_expr(expr)?;
+
+            Ok(SupportedJoin {
+                kind: SupportedJoinKind::RightOuter,
+                constraint_expr: expr,
+            })
+        }
         JoinOperator::Inner(_) | JoinOperator::LeftOuter(_) | JoinOperator::RightOuter(_) => {
             Err(QueryError::UnsupportedQuery)
         }
         _ => Err(QueryError::UnsupportedQuery),
+    }
+}
+
+fn validate_join_constraint_expr(expr: &Expr) -> Result<(), QueryError> {
+    let Expr::BinaryOp {
+        left,
+        op: BinaryOperator::Eq,
+        right,
+    } = expr
+    else {
+        return Ok(());
+    };
+
+    let left_ref = normalized_column_reference(left);
+    let right_ref = normalized_column_reference(right);
+
+    if let (Some(left_ref), Some(right_ref)) = (left_ref, right_ref) {
+        if left_ref == right_ref {
+            return Err(QueryError::InvalidJoinCondition(format!(
+                "reflexive predicate '{expr}' compares the same column on both sides"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn normalized_column_reference(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Identifier(identifier) => Some(identifier.value.to_ascii_lowercase()),
+        Expr::CompoundIdentifier(identifiers) => Some(
+            identifiers
+                .iter()
+                .map(|ident| ident.value.to_ascii_lowercase())
+                .collect::<Vec<_>>()
+                .join("."),
+        ),
+        Expr::Nested(inner) => normalized_column_reference(inner),
+        _ => None,
     }
 }
 

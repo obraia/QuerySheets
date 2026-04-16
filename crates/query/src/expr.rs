@@ -228,6 +228,12 @@ fn compare_values(
     right: &Value,
     string_comparison_mode: StringComparisonMode,
 ) -> Result<bool, QueryError> {
+    if matches!(left, Value::Null) || matches!(right, Value::Null) {
+        // SQL-style behavior for WHERE: comparisons involving NULL evaluate to unknown,
+        // and unknown predicates do not pass the filter.
+        return Ok(false);
+    }
+
     match (left, right) {
         (Value::Int(a), Value::Int(b)) => Ok(compare_ordering(op, a.cmp(b))),
         (Value::Float(a), Value::Float(b)) => {
@@ -255,7 +261,6 @@ fn compare_values(
             Ok(compare_ordering(op, ordering))
         }
         (Value::Bool(a), Value::Bool(b)) => Ok(compare_ordering(op, a.cmp(b))),
-        (Value::Null, Value::Null) => Ok(matches!(op, BinaryOperator::Eq | BinaryOperator::GtEq | BinaryOperator::LtEq)),
         _ => Err(QueryError::UnsupportedWhere(format!("cannot compare '{left:?}' and '{right:?}'"))),
     }
 }

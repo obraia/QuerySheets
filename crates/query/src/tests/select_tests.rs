@@ -122,3 +122,49 @@ fn executes_where_string_comparison_case_sensitive_when_enabled() {
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].values, vec![Value::String("BIA".into())]);
 }
+
+#[test]
+fn executes_where_with_float_and_null_without_error() {
+    let source = MockSource {
+        schema: Schema::new(vec![Column::new("tempo")]),
+        rows: vec![
+            Row::new(vec![Value::Float(12.0)]),
+            Row::new(vec![Value::Null]),
+            Row::new(vec![Value::Float(5.0)]),
+        ],
+    };
+
+    let engine = SqlLikeQueryEngine;
+    let result = engine
+        .execute(&source, "SELECT tempo FROM planilha WHERE tempo >= 10")
+        .expect("query should execute")
+        .collect::<Vec<_>>();
+
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].values, vec![Value::Float(12.0)]);
+}
+
+#[test]
+fn executes_where_null_literal_comparisons_as_non_matching() {
+    let source = MockSource {
+        schema: Schema::new(vec![Column::new("tempo")]),
+        rows: vec![
+            Row::new(vec![Value::Float(12.0)]),
+            Row::new(vec![Value::Null]),
+        ],
+    };
+
+    let engine = SqlLikeQueryEngine;
+
+    let eq_result = engine
+        .execute(&source, "SELECT tempo FROM planilha WHERE tempo = NULL")
+        .expect("query should execute")
+        .collect::<Vec<_>>();
+    assert!(eq_result.is_empty());
+
+    let neq_result = engine
+        .execute(&source, "SELECT tempo FROM planilha WHERE tempo != NULL")
+        .expect("query should execute")
+        .collect::<Vec<_>>();
+    assert!(neq_result.is_empty());
+}
