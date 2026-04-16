@@ -1,4 +1,65 @@
+import { useMemo } from "react";
 import type { QueryResult } from "../types/query";
+
+const EXCEL_EPOCH_UTC_MS = Date.UTC(1899, 11, 30);
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+const dateOnlyFormatter = new Intl.DateTimeFormat("pt-BR", {
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  timeZone: "UTC"
+});
+
+const dateTimeFormatter = new Intl.DateTimeFormat("pt-BR", {
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+  timeZone: "UTC"
+});
+
+function parseNumericString(raw: string): number | null {
+  const value = raw.trim();
+  if (!/^-?\d+(\.\d+)?$/.test(value)) {
+    return null;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function looksLikeExcelSerial(value: number): boolean {
+  return value >= 20000 && value <= 80000;
+}
+
+function hasFractionalTime(value: number): boolean {
+  return Math.abs(value - Math.trunc(value)) > 1e-8;
+}
+
+function columnNameSuggestsDate(columnName: string): boolean {
+  const normalized = columnName.toLowerCase();
+  return [
+    "date",
+    "data",
+    "time",
+    "hora",
+    "timestamp",
+    "created",
+    "updated",
+    "inserido",
+    "inclusao",
+    "emissao",
+    "nascimento"
+  ].some((term) => normalized.includes(term));
+}
+
+function excelSerialToUtcDate(serial: number): Date {
+  return new Date(EXCEL_EPOCH_UTC_MS + serial * DAY_MS);
+}
 
 type ResultsPanelProps = {
   result: QueryResult | null;
@@ -33,9 +94,61 @@ export function ResultsPanel({
   const rows = result?.rows ?? [];
   const paginationDisabled = isLoading || !result;
 
+  const dateLikeColumnByIndex = useMemo(() => {
+    return columns.map((columnName, columnIndex) => {
+      const headerHint = columnNameSuggestsDate(columnName);
+      const samples = rows
+        .map((row) => row[columnIndex] ?? "")
+        .filter((value) => value.trim().length > 0)
+        .slice(0, 120);
+
+      if (samples.length === 0) {
+        return false;
+      }
+
+      const serialSamples = samples
+        .map(parseNumericString)
+        .filter((value): value is number => value !== null && looksLikeExcelSerial(value));
+
+      if (serialSamples.length === 0) {
+        return false;
+      }
+
+      const serialRatio = serialSamples.length / samples.length;
+      const timeRatio =
+        serialSamples.filter((value) => hasFractionalTime(value)).length / serialSamples.length;
+
+      if (headerHint) {
+        return serialRatio >= 0.5;
+      }
+
+      return serialRatio >= 0.9 && timeRatio >= 0.25;
+    });
+  }, [columns, rows]);
+
   const displayColumnName = (column: string): string => {
     const normalized = column.trim();
     return normalized.length > 0 ? normalized : "(unnamed)";
+  };
+
+  const formatCellValue = (value: string, columnIndex: number): string => {
+    if (!dateLikeColumnByIndex[columnIndex]) {
+      return value;
+    }
+
+    const numeric = parseNumericString(value);
+    if (numeric === null || !looksLikeExcelSerial(numeric)) {
+      return value;
+    }
+
+    const date = excelSerialToUtcDate(numeric);
+    if (Number.isNaN(date.getTime())) {
+      return value;
+    }
+
+    return hasFractionalTime(numeric)
+      ? dateTimeFormatter.format(date)
+      : dateOnlyFormatter.format(date);
   };
 
   return (
@@ -143,14 +256,19 @@ export function ResultsPanel({
             <tbody>
               {rows.map((row, rowIndex) => (
                 <tr key={`row-${rowIndex}`} className="odd:bg-white even:bg-slate-50/80">
-                  {row.map((value, cellIndex) => (
+                  {row.map((value, cellIndex) => {
+                    const displayValue = formatCellValue(value, cellIndex);
+
+                    return (
                     <td
                       key={`row-${rowIndex}-cell-${cellIndex}`}
-                      className="border border-slate-100 px-3 py-2 font-mono text-[12px] text-slate-700"
+                      className="whitespace-nowrap border border-slate-100 px-3 py-2 font-mono text-[12px] text-slate-700"
+                      title={displayValue !== value ? `${displayValue} (raw: ${value})` : undefined}
                     >
-                      {value}
+                      {displayValue}
                     </td>
-                  ))}
+                    );
+                  })}
                 </tr>
               ))}
             </tbody>
