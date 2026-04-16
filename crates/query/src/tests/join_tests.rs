@@ -235,6 +235,53 @@ fn returns_error_for_ambiguous_unqualified_column_in_join() {
 }
 
 #[test]
+fn returns_error_for_unknown_alias_in_projection_with_join() {
+    let vehicles = MockSource {
+        schema: Schema::new(vec![
+            Column::new("codigo_modelo"),
+            Column::new("codigo_cor"),
+            Column::new("placa"),
+        ]),
+        rows: vec![Row::new(vec![
+            Value::Int(1),
+            Value::Int(10),
+            Value::String("ZZZ5498".into()),
+        ])],
+    };
+
+    let models = ResolvedTableData {
+        schema: Schema::new(vec![Column::new("codigo_modelo"), Column::new("descricao")]),
+        rows: vec![Row::new(vec![Value::Int(1), Value::String("Sedan".into())])],
+    };
+
+    let colors = ResolvedTableData {
+        schema: Schema::new(vec![Column::new("codigo_cor"), Column::new("descricao")]),
+        rows: vec![Row::new(vec![Value::Int(10), Value::String("Preto".into())])],
+    };
+
+    let engine = SqlLikeQueryEngine;
+    let result = engine.execute_with_schema_and_resolver(
+        &vehicles,
+        "SELECT v.placa, m.descricao AS modelo, a.descricao AS cor FROM veiculos v JOIN modelos m ON v.codigo_modelo = m.codigo_modelo JOIN cores c ON c.codigo_cor = v.codigo_cor WHERE v.placa IN ('ZZZ5498') LIMIT 10",
+        |table_ref| {
+            if table_ref.table.eq_ignore_ascii_case("modelos") {
+                Ok(models.clone())
+            } else if table_ref.table.eq_ignore_ascii_case("cores") {
+                Ok(colors.clone())
+            } else {
+                Err(QueryError::TableResolution(table_ref.table.clone()))
+            }
+        },
+    );
+
+    match result {
+        Err(QueryError::UnknownTableAlias(alias)) if alias.eq_ignore_ascii_case("a") => {}
+        Err(other) => panic!("unexpected error: {other}"),
+        Ok(_) => panic!("expected unknown table alias error"),
+    }
+}
+
+#[test]
 fn executes_left_join_with_unmatched_left_rows() {
     let customers = MockSource {
         schema: Schema::new(vec![Column::new("customer_id"), Column::new("name")]),

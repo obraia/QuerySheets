@@ -24,9 +24,31 @@ pub(crate) fn resolve_compound_column(schema: &Schema, identifiers: &[Ident]) ->
         {
             return Ok(index);
         }
+
+        if schema_has_qualified_columns(schema) {
+            if schema_has_qualifier(schema, qualifier) {
+                return Err(QueryError::ColumnNotFound(qualified_name));
+            }
+
+            return Err(QueryError::UnknownTableAlias(qualifier.to_string()));
+        }
     }
 
     resolve_column_name(schema, &last.value)
+}
+
+fn schema_has_qualified_columns(schema: &Schema) -> bool {
+    schema.columns.iter().any(|column| column.name.contains('.'))
+}
+
+fn schema_has_qualifier(schema: &Schema, qualifier: &str) -> bool {
+    schema.columns.iter().any(|column| {
+        column
+            .name
+            .split_once('.')
+            .map(|(prefix, _)| prefix.eq_ignore_ascii_case(qualifier))
+            .unwrap_or(false)
+    })
 }
 
 pub(crate) fn eval_predicate(

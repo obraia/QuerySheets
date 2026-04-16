@@ -18,6 +18,8 @@ pub enum QueryError {
     UnsupportedSelect(String),
     #[error("column not found: {0}")]
     ColumnNotFound(String),
+    #[error("unknown table alias: {0}")]
+    UnknownTableAlias(String),
     #[error("unsupported WHERE expression: {0}")]
     UnsupportedWhere(String),
     #[error("ambiguous column reference: {0}")]
