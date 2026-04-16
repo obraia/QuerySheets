@@ -2,13 +2,15 @@
 
 use calamine::{Reader, open_workbook_auto};
 use query_sheets_adapters::create_excel_source;
-use query_sheets_core::{DataSource, Row, Schema};
+use query_sheets_core::{DataSource, Row, Schema, Value};
 use query_sheets_query::{
     QueryEngine, QueryError, ResolvedTableData, SqlLikeQueryEngine, TableReference,
     extract_table_reference,
 };
 use serde::Serialize;
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Instant;
@@ -36,6 +38,21 @@ struct QueryResultPayload {
     displayed_rows: usize,
     elapsed_ms: u128,
     truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ExportResultPayload {
+    output_path: String,
+    format: String,
+    exported_rows: usize,
+    elapsed_ms: u128,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DetectedExportFormat {
+    Csv,
+    Json,
+    Jsonl,
 }
 
 #[derive(Debug, Clone)]
@@ -356,6 +373,221 @@ fn execute_sql(
     Ok(payload)
 }
 
+#[tauri::command]
+fn export_sql(
+    sql: String,
+    output_path: String,
+    case_sensitive_strings: Option<bool>,
+    state: tauri::State<'_, Mutex<AppState>>,
+) -> Result<ExportResultPayload, String> {
+    let started = Instant::now();
+
+    let mut guard = state
+        .lock()
+        .map_err(|_| "internal state lock poisoned".to_string())?;
+
+    let workspace = guard
+        .workspace
+        .as_mut()
+        .ok_or_else(|| "no folder opened".to_string())?;
+
+    let source = workspace.catalog.source_for_query(&sql)?.clone();
+
+    let engine = SqlLikeQueryEngine.with_case_sensitive_strings(
+        case_sensitive_strings.unwrap_or(false),
+    );
+
+    let mut execution = engine
+        .execute_with_schema_and_resolver(&source, &sql, |table_ref| {
+            workspace
+                .catalog
+                .resolved_table_data(table_ref)
+                .map_err(QueryError::TableResolution)
+        })
+        .map_err(|err| err.to_string())?;
+
+    let format = detect_export_format(&output_path)?;
+
+    let exported_rows = match format {
+        DetectedExportFormat::Csv => {
+            write_csv(&output_path, &execution.schema, execution.rows.by_ref())?
+        }
+        DetectedExportFormat::Json => {
+            write_json(&output_path, &execution.schema, execution.rows.by_ref())?
+        }
+        DetectedExportFormat::Jsonl => {
+            write_jsonl(&output_path, &execution.schema, execution.rows.by_ref())?
+        }
+    };
+
+    workspace.overview.cached_tables = workspace.catalog.cache_len();
+
+    Ok(ExportResultPayload {
+        output_path,
+        format: export_format_label(format).to_string(),
+        exported_rows,
+        elapsed_ms: started.elapsed().as_millis(),
+    })
+}
+
+fn write_csv(
+    path: &str,
+    schema: &Schema,
+    rows: impl Iterator<Item = Row>,
+) -> Result<usize, String> {
+    let file =
+        File::create(Path::new(path)).map_err(|err| format!("failed to create output file '{path}': {err}"))?;
+    let writer = BufWriter::new(file);
+    let mut csv_writer = csv::Writer::from_writer(writer);
+
+    let headers = schema
+        .columns
+        .iter()
+        .map(|column| column.name.as_str())
+        .collect::<Vec<_>>();
+    csv_writer
+        .write_record(headers)
+        .map_err(|err| format!("failed writing CSV header: {err}"))?;
+
+    let mut exported_rows = 0usize;
+    for row in rows {
+        let record = row.values.iter().map(value_to_string).collect::<Vec<_>>();
+        csv_writer
+            .write_record(record)
+            .map_err(|err| format!("failed writing CSV row: {err}"))?;
+        exported_rows += 1;
+    }
+
+    csv_writer
+        .flush()
+        .map_err(|err| format!("failed flushing CSV output: {err}"))?;
+
+    Ok(exported_rows)
+}
+
+fn write_json(
+    path: &str,
+    schema: &Schema,
+    rows: impl Iterator<Item = Row>,
+) -> Result<usize, String> {
+    let file =
+        File::create(Path::new(path)).map_err(|err| format!("failed to create output file '{path}': {err}"))?;
+    let mut writer = BufWriter::new(file);
+
+    writer
+        .write_all(b"[")
+        .map_err(|err| format!("failed writing JSON array start: {err}"))?;
+
+    let mut first = true;
+    let mut exported_rows = 0usize;
+    for row in rows {
+        if !first {
+            writer
+                .write_all(b",")
+                .map_err(|err| format!("failed writing JSON separator: {err}"))?;
+        }
+
+        first = false;
+        let value = serde_json::Value::Object(row_to_json_object(schema, &row));
+        serde_json::to_writer(&mut writer, &value)
+            .map_err(|err| format!("failed writing JSON object: {err}"))?;
+        exported_rows += 1;
+    }
+
+    writer
+        .write_all(b"]")
+        .map_err(|err| format!("failed writing JSON array end: {err}"))?;
+
+    writer
+        .flush()
+        .map_err(|err| format!("failed flushing JSON output: {err}"))?;
+
+    Ok(exported_rows)
+}
+
+fn write_jsonl(
+    path: &str,
+    schema: &Schema,
+    rows: impl Iterator<Item = Row>,
+) -> Result<usize, String> {
+    let file =
+        File::create(Path::new(path)).map_err(|err| format!("failed to create output file '{path}': {err}"))?;
+    let mut writer = BufWriter::new(file);
+
+    let mut exported_rows = 0usize;
+    for row in rows {
+        let value = serde_json::Value::Object(row_to_json_object(schema, &row));
+        serde_json::to_writer(&mut writer, &value)
+            .map_err(|err| format!("failed writing JSONL row: {err}"))?;
+        writer
+            .write_all(b"\n")
+            .map_err(|err| format!("failed writing JSONL line break: {err}"))?;
+        exported_rows += 1;
+    }
+
+    writer
+        .flush()
+        .map_err(|err| format!("failed flushing JSONL output: {err}"))?;
+
+    Ok(exported_rows)
+}
+
+fn row_to_json_object(schema: &Schema, row: &Row) -> serde_json::Map<String, serde_json::Value> {
+    let mut object = serde_json::Map::with_capacity(schema.columns.len());
+
+    for (idx, column) in schema.columns.iter().enumerate() {
+        let value = row.values.get(idx).unwrap_or(&Value::Null);
+        object.insert(column.name.clone(), value_to_json(value));
+    }
+
+    object
+}
+
+fn value_to_json(value: &Value) -> serde_json::Value {
+    match value {
+        Value::Int(v) => serde_json::Value::Number((*v).into()),
+        Value::Float(v) => serde_json::Number::from_f64(*v)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        Value::String(v) => serde_json::Value::String(v.clone()),
+        Value::Bool(v) => serde_json::Value::Bool(*v),
+        Value::Null => serde_json::Value::Null,
+    }
+}
+
+fn value_to_string(value: &Value) -> String {
+    value.to_string()
+}
+
+fn detect_export_format(output_path: &str) -> Result<DetectedExportFormat, String> {
+    let extension = Path::new(output_path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .ok_or_else(|| {
+            format!(
+                "could not detect export format from '{output_path}'. Use an output file ending with .csv, .json or .jsonl"
+            )
+        })?;
+
+    match extension.as_str() {
+        "csv" => Ok(DetectedExportFormat::Csv),
+        "json" => Ok(DetectedExportFormat::Json),
+        "jsonl" => Ok(DetectedExportFormat::Jsonl),
+        _ => Err(format!(
+            "unsupported output extension '.{extension}'. Supported extensions: .csv, .json, .jsonl"
+        )),
+    }
+}
+
+fn export_format_label(format: DetectedExportFormat) -> &'static str {
+    match format {
+        DetectedExportFormat::Csv => "csv",
+        DetectedExportFormat::Json => "json",
+        DetectedExportFormat::Jsonl => "jsonl",
+    }
+}
+
 fn workbook_sheets(path: &Path) -> Result<Vec<String>, String> {
     let workbook = open_workbook_auto(path)
         .map_err(|err| format!("failed to open workbook '{}': {err}", path.display()))?;
@@ -427,7 +659,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             set_workspace_folder,
             refresh_workspace_overview,
-            execute_sql
+            execute_sql,
+            export_sql
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

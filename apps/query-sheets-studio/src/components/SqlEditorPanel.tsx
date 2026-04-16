@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import CodeMirror from "@uiw/react-codemirror";
 import {
   autocompletion,
@@ -10,7 +10,8 @@ import {
 import { sql as sqlLanguage } from "@codemirror/lang-sql";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { keymap } from "@codemirror/view";
-import type { WorkspaceOverview } from "../types/query";
+import { ChevronDown, Download } from "lucide-react";
+import type { ExportFormat, WorkspaceOverview } from "../types/query";
 
 type SqlSuggestionContext = "select" | "fromJoin" | "filter" | "generic";
 
@@ -49,6 +50,12 @@ const SQL_KEYWORDS = [
   "MAX",
   "STDDEV",
   "CAST"
+];
+
+const EXPORT_OPTIONS: Array<{ format: ExportFormat; label: string; detail: string }> = [
+  { format: "csv", label: "CSV", detail: ".csv" },
+  { format: "json", label: "JSON", detail: ".json" },
+  { format: "jsonl", label: "JSONL", detail: ".jsonl" }
 ];
 
 function compactLocations(locations: string[]): string {
@@ -210,7 +217,9 @@ type SqlEditorPanelProps = {
   sql: string;
   onSqlChange: (value: string) => void;
   onRunQuery: () => Promise<void>;
+  onExportQuery: (format: ExportFormat) => Promise<void>;
   isRunning: boolean;
+  isExporting: boolean;
   workspace: WorkspaceOverview | null;
 };
 
@@ -218,9 +227,55 @@ export function SqlEditorPanel({
   sql,
   onSqlChange,
   onRunQuery,
+  onExportQuery,
   isRunning,
+  isExporting,
   workspace
 }: SqlEditorPanelProps): JSX.Element {
+  const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
+  const exportMenuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!isExportMenuOpen) {
+      return;
+    }
+
+    const handleOutsideClick = (event: MouseEvent): void => {
+      if (!exportMenuRef.current) {
+        return;
+      }
+
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
+
+      if (!exportMenuRef.current.contains(target)) {
+        setIsExportMenuOpen(false);
+      }
+    };
+
+    window.addEventListener("mousedown", handleOutsideClick);
+    return () => {
+      window.removeEventListener("mousedown", handleOutsideClick);
+    };
+  }, [isExportMenuOpen]);
+
+  useEffect(() => {
+    if (!isExporting) {
+      return;
+    }
+
+    setIsExportMenuOpen(false);
+  }, [isExporting]);
+
+  const exportDisabled = isRunning || isExporting || !workspace;
+
+  function handleExportSelectionChange(format: ExportFormat): void {
+    setIsExportMenuOpen(false);
+    void onExportQuery(format);
+  }
+
   const tableColumnsByName = useMemo(() => {
     const columnsByTable: Record<string, string[]> = {};
 
@@ -410,11 +465,55 @@ export function SqlEditorPanel({
     <section className="rounded-2xl border border-slate-200/70 bg-white/90 shadow-[0_16px_40px_-26px_rgba(15,23,42,0.45)] backdrop-blur-md">
       <header className="flex items-center justify-between border-b border-slate-100 px-4 py-3 lg:px-5">
         <p className="text-sm font-semibold text-slate-800">query.sql</p>
-        <p className="text-xs text-slate-500">
-          {isRunning
-            ? "Executing"
-            : "Cmd/Ctrl + Enter or Shift + Enter run · Cmd/Ctrl/Alt + Space autocomplete"}
-        </p>
+        <div className="relative flex items-center gap-3" ref={exportMenuRef}>
+          <p className="text-xs text-slate-500">
+            {isRunning
+              ? "Executing"
+              : "Cmd/Ctrl + Enter or Shift + Enter run · Cmd/Ctrl/Alt + Space autocomplete"}
+          </p>
+
+          <button
+            type="button"
+            aria-label="Export query result"
+            aria-haspopup="menu"
+            aria-expanded={isExportMenuOpen}
+            className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-medium text-slate-600 transition hover:border-sky-300 hover:text-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
+            onClick={() => setIsExportMenuOpen((open) => !open)}
+            disabled={exportDisabled}
+            title={!workspace ? "Open a folder before exporting" : "Export query result"}
+          >
+            <Download size={14} strokeWidth={2} />
+            <ChevronDown size={14} strokeWidth={2} className={isExportMenuOpen ? "rotate-180" : ""} />
+          </button>
+
+          {isExportMenuOpen && (
+            <div
+              role="menu"
+              aria-label="Export format options"
+              className="absolute right-0 top-[calc(100%+8px)] z-20 w-48 rounded-xl border border-slate-200 bg-white p-2 shadow-lg"
+            >
+              <p className="mb-1 px-2 pt-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">
+                Export Format
+              </p>
+
+              <div className="grid gap-1">
+                {EXPORT_OPTIONS.map((option) => (
+                  <button
+                    key={option.format}
+                    type="button"
+                    role="menuitem"
+                    className="flex items-center justify-between rounded-lg px-2 py-1.5 text-sm text-slate-700 transition hover:bg-sky-50 hover:text-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
+                    onClick={() => handleExportSelectionChange(option.format)}
+                    disabled={isExporting}
+                  >
+                    <span className="font-medium">{option.label}</span>
+                    <span className="text-xs text-slate-500">{option.detail}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
       </header>
 
       <CodeMirror

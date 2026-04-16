@@ -14,5 +14,7 @@ calamine = "0.31"
 query-sheets-adapters = { path = "../../../crates/adapters" }
 query-sheets-query = { path = "../../../crates/query" }
 query-sheets-core = { path = "../../../crates/core" }
+csv = "1"
+serde_json = "1"
 
 [workspace]

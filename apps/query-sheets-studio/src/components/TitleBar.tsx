@@ -4,6 +4,7 @@ type TitleBarProps = {
   onRefresh: () => Promise<void>;
   onRunQuery: () => Promise<void>;
   isBusy: boolean;
+  isRunning: boolean;
 };
 
 export function TitleBar({
@@ -11,7 +12,8 @@ export function TitleBar({
   onOpenFolder,
   onRefresh,
   onRunQuery,
-  isBusy
+  isBusy,
+  isRunning
 }: TitleBarProps): JSX.Element {
   return (
     <header className="rounded-2xl border border-slate-200/70 bg-white/85 p-4 shadow-[0_16px_40px_-26px_rgba(15,23,42,0.45)] backdrop-blur-md lg:p-5">
@@ -47,7 +49,7 @@ export function TitleBar({
             onClick={onRunQuery}
             disabled={isBusy}
           >
-            {isBusy ? "Running..." : "Run Query"}
+            {isRunning ? "Running..." : "Run Query"}
           </button>
         </div>
       </div>

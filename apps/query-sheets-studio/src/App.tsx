@@ -1,15 +1,16 @@
 import { lazy, Suspense, useMemo, useState } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { ExplorerPanel } from "./components/ExplorerPanel.js";
 import { ResultsPanel } from "./components/ResultsPanel.js";
 import { StatusBar } from "./components/StatusBar.js";
 import { TitleBar } from "./components/TitleBar.js";
 import {
   executeSql,
+  exportSql,
   refreshWorkspaceOverview,
   setWorkspaceFolder
 } from "./services/queryStudioApi.js";
-import type { QueryResult, StatusMessage, WorkspaceOverview } from "./types/query.js";
+import type { ExportFormat, QueryResult, StatusMessage, WorkspaceOverview } from "./types/query.js";
 
 const defaultSql = [
   "SELECT c.CustomerName, o.Amount",
@@ -51,6 +52,7 @@ export function App(): JSX.Element {
   const [resultMeta, setResultMeta] = useState("No query executed");
   const [error, setError] = useState<string | null>(null);
   const [isRunningQuery, setIsRunningQuery] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
   const [status, setStatus] = useState<StatusMessage>({
     message: "Ready",
     isError: false
@@ -58,7 +60,7 @@ export function App(): JSX.Element {
 
   const folderPath = workspace?.root_path ?? "Open a folder with spreadsheets";
 
-  const isBusy = useMemo(() => isRunningQuery, [isRunningQuery]);
+  const isBusy = useMemo(() => isRunningQuery || isExporting, [isExporting, isRunningQuery]);
 
   async function handleOpenFolder(): Promise<void> {
     const folder = await open({ directory: true, multiple: false });
@@ -153,6 +155,50 @@ export function App(): JSX.Element {
     }
   }
 
+  async function handleExportQuery(format: ExportFormat): Promise<void> {
+    const trimmedSql = sql.trim();
+
+    if (!trimmedSql) {
+      setStatus({ message: "Type a query first", isError: true });
+      return;
+    }
+
+    if (!workspace) {
+      setStatus({ message: "Open a folder before exporting", isError: true });
+      return;
+    }
+
+    try {
+      setIsExporting(true);
+      setStatus({ message: `Exporting ${format.toUpperCase()}...`, isError: false });
+
+      const selectedPath = await save({
+        defaultPath: `${workspace.root_path}/query-result.${format}`,
+        filters: [
+          {
+            name: format.toUpperCase(),
+            extensions: [format]
+          }
+        ]
+      });
+
+      if (!selectedPath || typeof selectedPath !== "string") {
+        setStatus({ message: "Export canceled", isError: false });
+        return;
+      }
+
+      const exportResult = await exportSql(trimmedSql, selectedPath, format, false);
+      setStatus({
+        message: `Exported ${exportResult.exported_rows} row(s) to ${exportResult.output_path} in ${exportResult.elapsed_ms} ms`,
+        isError: false
+      });
+    } catch (err) {
+      setStatus({ message: `Export failed: ${String(err)}`, isError: true });
+    } finally {
+      setIsExporting(false);
+    }
+  }
+
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_15%_20%,#eff6ff_0%,#f8fafc_35%,#fff7ed_100%)] text-slate-900">
       <div className="mx-auto grid max-w-[1500px] grid-cols-1 gap-4 px-4 py-4 lg:grid-cols-[320px_minmax(0,1fr)] lg:px-6 lg:py-6">
@@ -165,6 +211,7 @@ export function App(): JSX.Element {
             onRefresh={handleRefreshWorkspace}
             onRunQuery={handleRunQuery}
             isBusy={isBusy}
+            isRunning={isRunningQuery}
           />
 
           <Suspense
@@ -182,7 +229,9 @@ export function App(): JSX.Element {
               sql={sql}
               onSqlChange={setSql}
               onRunQuery={handleRunQuery}
-              isRunning={isBusy}
+              onExportQuery={handleExportQuery}
+              isRunning={isRunningQuery}
+              isExporting={isExporting}
               workspace={workspace}
             />
           </Suspense>

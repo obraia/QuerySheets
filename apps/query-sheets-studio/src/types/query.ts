@@ -20,6 +20,15 @@ export type QueryResult = {
   truncated: boolean;
 };
 
+export type ExportFormat = "csv" | "json" | "jsonl";
+
+export type ExportResult = {
+  output_path: string;
+  format: ExportFormat;
+  exported_rows: number;
+  elapsed_ms: number;
+};
+
 export type StatusMessage = {
   message: string;
   isError: boolean;
