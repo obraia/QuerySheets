@@ -425,3 +425,101 @@ fn executes_order_by_non_projected_column_with_scalar_subquery_projection() {
     assert_eq!(result[1].values, vec![Value::String("caio".into()), Value::Int(20)]);
     assert_eq!(result[2].values, vec![Value::String("ana".into()), Value::Int(10)]);
 }
+
+#[test]
+fn executes_where_exists_non_correlated() {
+    let source = MockSource {
+        schema: Schema::new(vec![Column::new("name"), Column::new("age")]),
+        rows: vec![
+            Row::new(vec![Value::String("ana".into()), Value::Int(10)]),
+            Row::new(vec![Value::String("bia".into()), Value::Int(20)]),
+            Row::new(vec![Value::String("caio".into()), Value::Int(30)]),
+        ],
+    };
+
+    let engine = SqlLikeQueryEngine;
+    let result = engine
+        .execute(
+            &source,
+            "SELECT name FROM planilha WHERE EXISTS (SELECT 1 FROM planilha WHERE age > 20) ORDER BY name",
+        )
+        .expect("query should execute")
+        .collect::<Vec<_>>();
+
+    assert_eq!(result.len(), 3);
+    assert_eq!(result[0].values, vec![Value::String("ana".into())]);
+    assert_eq!(result[1].values, vec![Value::String("bia".into())]);
+    assert_eq!(result[2].values, vec![Value::String("caio".into())]);
+}
+
+#[test]
+fn executes_where_not_exists_non_correlated() {
+    let source = MockSource {
+        schema: Schema::new(vec![Column::new("name"), Column::new("age")]),
+        rows: vec![
+            Row::new(vec![Value::String("ana".into()), Value::Int(10)]),
+            Row::new(vec![Value::String("bia".into()), Value::Int(20)]),
+            Row::new(vec![Value::String("caio".into()), Value::Int(30)]),
+        ],
+    };
+
+    let engine = SqlLikeQueryEngine;
+    let result = engine
+        .execute(
+            &source,
+            "SELECT name FROM planilha WHERE NOT EXISTS (SELECT 1 FROM planilha WHERE age > 20)",
+        )
+        .expect("query should execute")
+        .collect::<Vec<_>>();
+
+    assert!(result.is_empty());
+}
+
+#[test]
+fn executes_where_exists_correlated() {
+    let source = MockSource {
+        schema: Schema::new(vec![Column::new("name"), Column::new("age")]),
+        rows: vec![
+            Row::new(vec![Value::String("ana".into()), Value::Int(10)]),
+            Row::new(vec![Value::String("bia".into()), Value::Int(20)]),
+            Row::new(vec![Value::String("caio".into()), Value::Int(30)]),
+        ],
+    };
+
+    let engine = SqlLikeQueryEngine;
+    let result = engine
+        .execute(
+            &source,
+            "SELECT name FROM planilha p WHERE EXISTS (SELECT 1 FROM planilha p2 WHERE p2.age = p.age AND p2.age > 20)",
+        )
+        .expect("query should execute")
+        .collect::<Vec<_>>();
+
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].values, vec![Value::String("caio".into())]);
+}
+
+#[test]
+fn executes_where_not_exists_correlated() {
+    let source = MockSource {
+        schema: Schema::new(vec![Column::new("name"), Column::new("age")]),
+        rows: vec![
+            Row::new(vec![Value::String("ana".into()), Value::Int(10)]),
+            Row::new(vec![Value::String("bia".into()), Value::Int(20)]),
+            Row::new(vec![Value::String("caio".into()), Value::Int(30)]),
+        ],
+    };
+
+    let engine = SqlLikeQueryEngine;
+    let result = engine
+        .execute(
+            &source,
+            "SELECT name FROM planilha p WHERE NOT EXISTS (SELECT 1 FROM planilha p2 WHERE p2.age = p.age AND p2.age > 20) ORDER BY name",
+        )
+        .expect("query should execute")
+        .collect::<Vec<_>>();
+
+    assert_eq!(result.len(), 2);
+    assert_eq!(result[0].values, vec![Value::String("ana".into())]);
+    assert_eq!(result[1].values, vec![Value::String("bia".into())]);
+}

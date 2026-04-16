@@ -242,12 +242,17 @@ fn execute_parsed_select<'a>(
     table_resolver: &mut dyn FnMut(&TableReference) -> Result<ResolvedTableData, QueryError>,
 ) -> Result<QueryExecution<'a>, QueryError> {
     let schema = source.schema().clone();
-    let where_expr = materialize_subqueries_in_expr(
-        parsed_query.select.selection.as_ref(),
+    let filtered_source = filter_source_with_where(
         source,
+        &schema,
+        parsed_query.select.selection.as_ref(),
         string_comparison_mode,
         table_resolver,
     )?;
+    let effective_source: &dyn DataSource = filtered_source
+        .as_ref()
+        .map(|value| value as &dyn DataSource)
+        .unwrap_or(source);
 
     if let Some(group_by_columns) =
         extract_group_by_column_indexes(&schema, &parsed_query.select.group_by)?
@@ -255,15 +260,19 @@ fn execute_parsed_select<'a>(
         let plan =
             build_group_by_aggregation_plan(&schema, &parsed_query.select.projection, &group_by_columns)?;
         let mut execution = execute_group_by_aggregation(
-            source,
+            effective_source,
             &schema,
-            where_expr.as_ref(),
+            None,
             plan,
             string_comparison_mode,
         )?;
         execution = apply_order_by_to_execution(execution, &parsed_query.order_by, string_comparison_mode)?;
         execution = apply_pagination_to_execution(execution, parsed_query.pagination);
-        return Ok(execution);
+        let rows = execution.rows.collect::<Vec<_>>();
+        return Ok(QueryExecution {
+            schema: execution.schema,
+            rows: Box::new(rows.into_iter()),
+        });
     }
 
     let (projection, projected_schema) = build_projection(&schema, &parsed_query.select.projection)?;
@@ -271,9 +280,10 @@ fn execute_parsed_select<'a>(
 
     if projection_has_scalar_subquery {
         let mut execution = execute_select_with_scalar_subqueries(
+            effective_source,
             source,
             &schema,
-            where_expr.as_ref(),
+            None,
             &projection,
             projected_schema,
             &parsed_query.order_by,
@@ -281,22 +291,18 @@ fn execute_parsed_select<'a>(
             table_resolver,
         )?;
         execution = apply_pagination_to_execution(execution, parsed_query.pagination);
-        return Ok(execution);
+        let rows = execution.rows.collect::<Vec<_>>();
+        return Ok(QueryExecution {
+            schema: execution.schema,
+            rows: Box::new(rows.into_iter()),
+        });
     }
 
     let mut execution = if parsed_query.order_by.is_empty() {
-        let iter = source.scan().filter_map(move |row| {
-            if let Some(expr) = &where_expr {
-                let keep = eval_predicate(expr, &row, &schema, string_comparison_mode)
-                    .unwrap_or(false);
-                if !keep {
-                    return None;
-                }
-            }
-
+        let iter = effective_source.scan().map(move |row| {
             let values = project_row(&projection, &row, &schema);
 
-            Some(Row::new(values))
+            Row::new(values)
         });
 
         QueryExecution {
@@ -305,9 +311,9 @@ fn execute_parsed_select<'a>(
         }
     } else {
         execute_select_with_order_by(
-            source,
+            effective_source,
             &schema,
-            where_expr.as_ref(),
+            None,
             &projection,
             projected_schema,
             &parsed_query.order_by,
@@ -317,11 +323,100 @@ fn execute_parsed_select<'a>(
 
     execution = apply_pagination_to_execution(execution, parsed_query.pagination);
 
-    Ok(execution)
+    let rows = execution.rows.collect::<Vec<_>>();
+    Ok(QueryExecution {
+        schema: execution.schema,
+        rows: Box::new(rows.into_iter()),
+    })
+}
+
+fn filter_source_with_where(
+    source: &dyn DataSource,
+    source_schema: &Schema,
+    where_expr: Option<&Expr>,
+    string_comparison_mode: StringComparisonMode,
+    table_resolver: &mut dyn FnMut(&TableReference) -> Result<ResolvedTableData, QueryError>,
+) -> Result<Option<InMemoryDataSource>, QueryError> {
+    let Some(where_expr) = where_expr else {
+        return Ok(None);
+    };
+
+    // Materialize non-correlated subqueries once to avoid re-running them for each row.
+    let pre_rewritten_where = if expr_contains_subquery(where_expr) {
+        Some(rewrite_expr_subqueries(
+            where_expr,
+            source,
+            source_schema,
+            string_comparison_mode,
+            table_resolver,
+            None,
+        )?)
+    } else {
+        None
+    };
+    let has_remaining_subqueries = pre_rewritten_where
+        .as_ref()
+        .map(expr_contains_subquery)
+        .unwrap_or(false);
+
+    let mut filtered_rows = Vec::new();
+
+    for row in source.scan() {
+        let keep = if let Some(rewritten_where) = pre_rewritten_where.as_ref() {
+            if has_remaining_subqueries {
+                evaluate_where_expr_for_row(
+                    rewritten_where,
+                    &row,
+                    source,
+                    source_schema,
+                    string_comparison_mode,
+                    table_resolver,
+                )?
+            } else {
+                eval_predicate(rewritten_where, &row, source_schema, string_comparison_mode)?
+            }
+        } else {
+            eval_predicate(where_expr, &row, source_schema, string_comparison_mode)?
+        };
+
+        if keep {
+            filtered_rows.push(row);
+        }
+    }
+
+    Ok(Some(InMemoryDataSource {
+        schema: source_schema.clone(),
+        rows: filtered_rows,
+    }))
+}
+
+fn evaluate_where_expr_for_row(
+    where_expr: &Expr,
+    row: &Row,
+    source: &dyn DataSource,
+    source_schema: &Schema,
+    string_comparison_mode: StringComparisonMode,
+    table_resolver: &mut dyn FnMut(&TableReference) -> Result<ResolvedTableData, QueryError>,
+) -> Result<bool, QueryError> {
+    if expr_contains_subquery(where_expr) {
+        let rewritten = rewrite_expr_subqueries(
+            where_expr,
+            source,
+            source_schema,
+            string_comparison_mode,
+            table_resolver,
+            Some((row, source_schema)),
+        )?;
+
+        return eval_predicate(&rewritten, row, source_schema, string_comparison_mode);
+    }
+
+    eval_predicate(where_expr, row, source_schema, string_comparison_mode)
 }
 
 fn execute_select_with_scalar_subqueries<'a>(
-    source: &'a dyn DataSource,
+    scan_source: &'a dyn DataSource,
+    subquery_source: &dyn DataSource,
     source_schema: &Schema,
     where_expr: Option<&Expr>,
     projection: &[projection::ProjectionItem],
@@ -332,7 +427,7 @@ fn execute_select_with_scalar_subqueries<'a>(
 ) -> Result<QueryExecution<'a>, QueryError> {
     let mut projected_with_source_rows = Vec::new();
 
-    for source_row in source.scan() {
+    for source_row in scan_source.scan() {
         if let Some(expr) = where_expr {
             let keep = eval_predicate(expr, &source_row, source_schema, string_comparison_mode)?;
             if !keep {
@@ -344,7 +439,7 @@ fn execute_select_with_scalar_subqueries<'a>(
             projection,
             &source_row,
             source_schema,
-            source,
+            subquery_source,
             string_comparison_mode,
             table_resolver,
         )?;
@@ -544,52 +639,56 @@ fn rewrite_scalar_subqueries_for_projection(
                 negated: *negated,
             })
         }
+        Expr::Exists { subquery, negated } => {
+            let exists = execute_exists_subquery(
+                subquery,
+                source,
+                string_comparison_mode,
+                table_resolver,
+                *negated,
+                Some((outer_row, outer_schema)),
+            )?;
+
+            Ok(Expr::Value(SqlValue::Boolean(exists)))
+        }
         _ => Ok(expr.clone()),
     }
 }
 
 fn projection_uses_scalar_subquery(select_items: &[SelectItem]) -> bool {
     select_items.iter().any(|item| match item {
-        SelectItem::UnnamedExpr(expr) => expr_contains_scalar_subquery(expr),
-        SelectItem::ExprWithAlias { expr, .. } => expr_contains_scalar_subquery(expr),
+        SelectItem::UnnamedExpr(expr) => expr_contains_subquery(expr),
+        SelectItem::ExprWithAlias { expr, .. } => expr_contains_subquery(expr),
         _ => false,
     })
 }
 
-fn expr_contains_scalar_subquery(expr: &Expr) -> bool {
+fn expr_contains_subquery(expr: &Expr) -> bool {
     match expr {
         Expr::Subquery(_) => true,
         Expr::BinaryOp { left, right, .. } => {
-            expr_contains_scalar_subquery(left) || expr_contains_scalar_subquery(right)
+            expr_contains_subquery(left) || expr_contains_subquery(right)
         }
-        Expr::Nested(inner) => expr_contains_scalar_subquery(inner),
-        Expr::UnaryOp { expr: inner, .. } => expr_contains_scalar_subquery(inner),
-        Expr::Cast { expr: inner, .. } => expr_contains_scalar_subquery(inner),
+        Expr::Nested(inner) => expr_contains_subquery(inner),
+        Expr::UnaryOp { expr: inner, .. } => expr_contains_subquery(inner),
+        Expr::Cast { expr: inner, .. } => expr_contains_subquery(inner),
         Expr::InList { expr: inner, list, .. } => {
-            expr_contains_scalar_subquery(inner)
-                || list.iter().any(expr_contains_scalar_subquery)
+            expr_contains_subquery(inner)
+                || list.iter().any(expr_contains_subquery)
         }
         Expr::InSubquery { .. } => true,
+        Expr::Exists { .. } => true,
         _ => false,
     }
-}
-
-fn materialize_subqueries_in_expr(
-    expr: Option<&Expr>,
-    source: &dyn DataSource,
-    string_comparison_mode: StringComparisonMode,
-    table_resolver: &mut dyn FnMut(&TableReference) -> Result<ResolvedTableData, QueryError>,
-) -> Result<Option<Expr>, QueryError> {
-    expr
-        .map(|value| rewrite_expr_subqueries(value, source, string_comparison_mode, table_resolver))
-        .transpose()
 }
 
 fn rewrite_expr_subqueries(
     expr: &Expr,
     source: &dyn DataSource,
+    source_schema: &Schema,
     string_comparison_mode: StringComparisonMode,
     table_resolver: &mut dyn FnMut(&TableReference) -> Result<ResolvedTableData, QueryError>,
+    outer_context: Option<(&Row, &Schema)>,
 ) -> Result<Expr, QueryError> {
     match expr {
         Expr::InSubquery {
@@ -600,15 +699,26 @@ fn rewrite_expr_subqueries(
             let rewritten_inner = rewrite_expr_subqueries(
                 inner,
                 source,
+                source_schema,
                 string_comparison_mode,
                 table_resolver,
+                outer_context,
             )?;
+
+            if outer_context.is_none() && query_references_outer_schema(subquery, source_schema) {
+                return Ok(Expr::InSubquery {
+                    expr: Box::new(rewritten_inner),
+                    subquery: subquery.clone(),
+                    negated: *negated,
+                });
+            }
+
             let values = execute_subquery_values(
                 subquery,
                 source,
                 string_comparison_mode,
                 table_resolver,
-                None,
+                outer_context,
             )?;
             let list = values.into_iter().map(value_to_sql_expr).collect::<Vec<_>>();
 
@@ -626,13 +736,22 @@ fn rewrite_expr_subqueries(
             let rewritten_inner = rewrite_expr_subqueries(
                 inner,
                 source,
+                source_schema,
                 string_comparison_mode,
                 table_resolver,
+                outer_context,
             )?;
             let rewritten_list = list
                 .iter()
                 .map(|item| {
-                    rewrite_expr_subqueries(item, source, string_comparison_mode, table_resolver)
+                    rewrite_expr_subqueries(
+                        item,
+                        source,
+                        source_schema,
+                        string_comparison_mode,
+                        table_resolver,
+                        outer_context,
+                    )
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
@@ -644,9 +763,23 @@ fn rewrite_expr_subqueries(
         }
         Expr::BinaryOp { left, op, right } => {
             let rewritten_left =
-                rewrite_expr_subqueries(left, source, string_comparison_mode, table_resolver)?;
+                rewrite_expr_subqueries(
+                    left,
+                    source,
+                    source_schema,
+                    string_comparison_mode,
+                    table_resolver,
+                    outer_context,
+                )?;
             let rewritten_right =
-                rewrite_expr_subqueries(right, source, string_comparison_mode, table_resolver)?;
+                rewrite_expr_subqueries(
+                    right,
+                    source,
+                    source_schema,
+                    string_comparison_mode,
+                    table_resolver,
+                    outer_context,
+                )?;
 
             Ok(Expr::BinaryOp {
                 left: Box::new(rewritten_left),
@@ -654,14 +787,153 @@ fn rewrite_expr_subqueries(
                 right: Box::new(rewritten_right),
             })
         }
+        Expr::Exists { subquery, negated } => {
+            if outer_context.is_none() && query_references_outer_schema(subquery, source_schema) {
+                return Ok(Expr::Exists {
+                    subquery: subquery.clone(),
+                    negated: *negated,
+                });
+            }
+
+            let exists = execute_exists_subquery(
+                subquery,
+                source,
+                string_comparison_mode,
+                table_resolver,
+                *negated,
+                outer_context,
+            )?;
+
+            Ok(Expr::Value(SqlValue::Boolean(exists)))
+        }
         Expr::Nested(inner) => Ok(Expr::Nested(Box::new(rewrite_expr_subqueries(
             inner,
             source,
+            source_schema,
             string_comparison_mode,
             table_resolver,
+            outer_context,
         )?))),
         _ => Ok(expr.clone()),
     }
+}
+
+fn query_references_outer_schema(query: &Query, outer_schema: &Schema) -> bool {
+    let SetExpr::Select(select) = query.body.as_ref() else {
+        return false;
+    };
+
+    let local_aliases = select_local_aliases(select);
+
+    if select
+        .projection
+        .iter()
+        .any(|item| select_item_references_outer_schema(item, outer_schema, &local_aliases))
+    {
+        return true;
+    }
+
+    if select
+        .selection
+        .as_ref()
+        .map(|expr| expr_references_outer_schema(expr, outer_schema, &local_aliases))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+
+    if let Some(order_by) = query.order_by.as_ref() {
+        if order_by
+            .exprs
+            .iter()
+            .any(|item| expr_references_outer_schema(&item.expr, outer_schema, &local_aliases))
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn select_item_references_outer_schema(
+    item: &SelectItem,
+    outer_schema: &Schema,
+    local_aliases: &HashSet<String>,
+) -> bool {
+    match item {
+        SelectItem::UnnamedExpr(expr) => {
+            expr_references_outer_schema(expr, outer_schema, local_aliases)
+        }
+        SelectItem::ExprWithAlias { expr, .. } => {
+            expr_references_outer_schema(expr, outer_schema, local_aliases)
+        }
+        _ => false,
+    }
+}
+
+fn expr_references_outer_schema(
+    expr: &Expr,
+    outer_schema: &Schema,
+    local_aliases: &HashSet<String>,
+) -> bool {
+    match expr {
+        Expr::CompoundIdentifier(identifiers) => {
+            if identifiers.len() < 2 {
+                return false;
+            }
+
+            let qualifier = identifiers[identifiers.len() - 2].value.to_ascii_lowercase();
+            if local_aliases.contains(&qualifier) {
+                return false;
+            }
+
+            resolve_compound_column(outer_schema, identifiers).is_ok()
+        }
+        Expr::Subquery(subquery) => query_references_outer_schema(subquery, outer_schema),
+        Expr::InSubquery { expr: inner, subquery, .. } => {
+            expr_references_outer_schema(inner, outer_schema, local_aliases)
+                || query_references_outer_schema(subquery, outer_schema)
+        }
+        Expr::Exists { subquery, .. } => query_references_outer_schema(subquery, outer_schema),
+        Expr::InList { expr: inner, list, .. } => {
+            expr_references_outer_schema(inner, outer_schema, local_aliases)
+                || list
+                    .iter()
+                    .any(|item| expr_references_outer_schema(item, outer_schema, local_aliases))
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            expr_references_outer_schema(left, outer_schema, local_aliases)
+                || expr_references_outer_schema(right, outer_schema, local_aliases)
+        }
+        Expr::Nested(inner) => expr_references_outer_schema(inner, outer_schema, local_aliases),
+        Expr::UnaryOp { expr: inner, .. } => {
+            expr_references_outer_schema(inner, outer_schema, local_aliases)
+        }
+        Expr::Cast { expr: inner, .. } => {
+            expr_references_outer_schema(inner, outer_schema, local_aliases)
+        }
+        _ => false,
+    }
+}
+
+fn execute_exists_subquery(
+    subquery: &sqlparser::ast::Query,
+    source: &dyn DataSource,
+    string_comparison_mode: StringComparisonMode,
+    table_resolver: &mut dyn FnMut(&TableReference) -> Result<ResolvedTableData, QueryError>,
+    negated: bool,
+    outer_context: Option<(&Row, &Schema)>,
+) -> Result<bool, QueryError> {
+    let (_schema, rows) = execute_subquery_rows(
+        subquery,
+        source,
+        string_comparison_mode,
+        table_resolver,
+        outer_context,
+    )?;
+
+    let exists = !rows.is_empty();
+    Ok(if negated { !exists } else { exists })
 }
 
 fn execute_subquery_values(
