@@ -168,3 +168,87 @@ fn executes_where_null_literal_comparisons_as_non_matching() {
         .collect::<Vec<_>>();
     assert!(neq_result.is_empty());
 }
+
+#[test]
+fn executes_where_in_list_numeric() {
+    let source = MockSource {
+        schema: Schema::new(vec![Column::new("name"), Column::new("age")]),
+        rows: vec![
+            Row::new(vec![Value::String("ana".into()), Value::Int(10)]),
+            Row::new(vec![Value::String("bia".into()), Value::Int(20)]),
+            Row::new(vec![Value::String("caio".into()), Value::Int(30)]),
+        ],
+    };
+
+    let engine = SqlLikeQueryEngine;
+    let result = engine
+        .execute(&source, "SELECT name FROM planilha WHERE age IN (10, 30)")
+        .expect("query should execute")
+        .collect::<Vec<_>>();
+
+    assert_eq!(result.len(), 2);
+    assert_eq!(result[0].values, vec![Value::String("ana".into())]);
+    assert_eq!(result[1].values, vec![Value::String("caio".into())]);
+}
+
+#[test]
+fn executes_where_not_in_list_numeric() {
+    let source = MockSource {
+        schema: Schema::new(vec![Column::new("name"), Column::new("age")]),
+        rows: vec![
+            Row::new(vec![Value::String("ana".into()), Value::Int(10)]),
+            Row::new(vec![Value::String("bia".into()), Value::Int(20)]),
+            Row::new(vec![Value::String("caio".into()), Value::Int(30)]),
+        ],
+    };
+
+    let engine = SqlLikeQueryEngine;
+    let result = engine
+        .execute(&source, "SELECT name FROM planilha WHERE age NOT IN (10, 30)")
+        .expect("query should execute")
+        .collect::<Vec<_>>();
+
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].values, vec![Value::String("bia".into())]);
+}
+
+#[test]
+fn executes_where_in_list_string_case_insensitive() {
+    let source = MockSource {
+        schema: Schema::new(vec![Column::new("name"), Column::new("age")]),
+        rows: vec![
+            Row::new(vec![Value::String("ana".into()), Value::Int(10)]),
+            Row::new(vec![Value::String("bia".into()), Value::Int(20)]),
+            Row::new(vec![Value::String("caio".into()), Value::Int(30)]),
+        ],
+    };
+
+    let engine = SqlLikeQueryEngine;
+    let result = engine
+        .execute(&source, "SELECT name FROM planilha WHERE name IN ('BIA', 'CAIO')")
+        .expect("query should execute")
+        .collect::<Vec<_>>();
+
+    assert_eq!(result.len(), 2);
+    assert_eq!(result[0].values, vec![Value::String("bia".into())]);
+    assert_eq!(result[1].values, vec![Value::String("caio".into())]);
+}
+
+#[test]
+fn executes_where_not_in_with_null_list_as_non_matching() {
+    let source = MockSource {
+        schema: Schema::new(vec![Column::new("name"), Column::new("age")]),
+        rows: vec![
+            Row::new(vec![Value::String("ana".into()), Value::Int(10)]),
+            Row::new(vec![Value::String("bia".into()), Value::Int(20)]),
+        ],
+    };
+
+    let engine = SqlLikeQueryEngine;
+    let result = engine
+        .execute(&source, "SELECT name FROM planilha WHERE age NOT IN (10, NULL)")
+        .expect("query should execute")
+        .collect::<Vec<_>>();
+
+    assert!(result.is_empty());
+}

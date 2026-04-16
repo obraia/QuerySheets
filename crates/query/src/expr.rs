@@ -36,6 +36,18 @@ pub(crate) fn eval_predicate(
     string_comparison_mode: StringComparisonMode,
 ) -> Result<bool, QueryError> {
     match expr {
+        Expr::InList {
+            expr: inner,
+            list,
+            negated,
+        } => eval_in_list_predicate(
+            inner,
+            list,
+            *negated,
+            row,
+            schema,
+            string_comparison_mode,
+        ),
         Expr::BinaryOp { left, op, right } => match op {
             BinaryOperator::And => {
                 Ok(
@@ -65,6 +77,54 @@ pub(crate) fn eval_predicate(
         Expr::Value(SqlValue::Boolean(v)) => Ok(*v),
         _ => Err(QueryError::UnsupportedWhere(expr.to_string())),
     }
+}
+
+fn eval_in_list_predicate(
+    left_expr: &Expr,
+    list: &[Expr],
+    negated: bool,
+    row: &Row,
+    schema: &Schema,
+    string_comparison_mode: StringComparisonMode,
+) -> Result<bool, QueryError> {
+    let left_value = eval_value(left_expr, row, schema)?;
+    if matches!(left_value, Value::Null) {
+        return Ok(false);
+    }
+
+    let mut matched = false;
+    let mut has_null_candidate = false;
+
+    for candidate_expr in list {
+        let candidate = eval_value(candidate_expr, row, schema)?;
+
+        if matches!(candidate, Value::Null) {
+            has_null_candidate = true;
+            continue;
+        }
+
+        let equals = compare_values(
+            &BinaryOperator::Eq,
+            &left_value,
+            &candidate,
+            string_comparison_mode,
+        )?;
+
+        if equals {
+            matched = true;
+            break;
+        }
+    }
+
+    if negated {
+        if matched || has_null_candidate {
+            return Ok(false);
+        }
+
+        return Ok(true);
+    }
+
+    Ok(matched)
 }
 
 pub(crate) fn eval_value(expr: &Expr, row: &Row, schema: &Schema) -> Result<Value, QueryError> {
