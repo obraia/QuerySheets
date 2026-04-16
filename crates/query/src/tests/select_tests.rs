@@ -1,5 +1,5 @@
 use super::MockSource;
-use crate::{QueryEngine, SqlLikeQueryEngine};
+use crate::{QueryEngine, QueryError, SqlLikeQueryEngine};
 use query_sheets_core::{Column, Row, Schema, Value};
 
 #[test]
@@ -251,4 +251,177 @@ fn executes_where_not_in_with_null_list_as_non_matching() {
         .collect::<Vec<_>>();
 
     assert!(result.is_empty());
+}
+
+#[test]
+fn executes_where_in_subquery_numeric() {
+    let source = MockSource {
+        schema: Schema::new(vec![Column::new("name"), Column::new("age")]),
+        rows: vec![
+            Row::new(vec![Value::String("ana".into()), Value::Int(10)]),
+            Row::new(vec![Value::String("bia".into()), Value::Int(20)]),
+            Row::new(vec![Value::String("caio".into()), Value::Int(30)]),
+        ],
+    };
+
+    let engine = SqlLikeQueryEngine;
+    let result = engine
+        .execute(
+            &source,
+            "SELECT name FROM planilha WHERE age IN (SELECT age FROM planilha WHERE age >= 20)",
+        )
+        .expect("query should execute")
+        .collect::<Vec<_>>();
+
+    assert_eq!(result.len(), 2);
+    assert_eq!(result[0].values, vec![Value::String("bia".into())]);
+    assert_eq!(result[1].values, vec![Value::String("caio".into())]);
+}
+
+#[test]
+fn executes_where_not_in_subquery_numeric() {
+    let source = MockSource {
+        schema: Schema::new(vec![Column::new("name"), Column::new("age")]),
+        rows: vec![
+            Row::new(vec![Value::String("ana".into()), Value::Int(10)]),
+            Row::new(vec![Value::String("bia".into()), Value::Int(20)]),
+            Row::new(vec![Value::String("caio".into()), Value::Int(30)]),
+        ],
+    };
+
+    let engine = SqlLikeQueryEngine;
+    let result = engine
+        .execute(
+            &source,
+            "SELECT name FROM planilha WHERE age NOT IN (SELECT age FROM planilha WHERE age >= 20)",
+        )
+        .expect("query should execute")
+        .collect::<Vec<_>>();
+
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].values, vec![Value::String("ana".into())]);
+}
+
+#[test]
+fn returns_error_when_in_subquery_returns_multiple_columns() {
+    let source = MockSource {
+        schema: Schema::new(vec![Column::new("name"), Column::new("age")]),
+        rows: vec![
+            Row::new(vec![Value::String("ana".into()), Value::Int(10)]),
+            Row::new(vec![Value::String("bia".into()), Value::Int(20)]),
+        ],
+    };
+
+    let engine = SqlLikeQueryEngine;
+    let result = engine.execute(
+        &source,
+        "SELECT name FROM planilha WHERE age IN (SELECT age, name FROM planilha)",
+    );
+
+    match result {
+        Err(QueryError::UnsupportedWhere(_)) => {}
+        Err(other) => panic!("unexpected error: {other}"),
+        Ok(_) => panic!("expected unsupported where error"),
+    }
+}
+
+#[test]
+fn executes_scalar_subquery_in_projection() {
+    let source = MockSource {
+        schema: Schema::new(vec![Column::new("name"), Column::new("age")]),
+        rows: vec![
+            Row::new(vec![Value::String("ana".into()), Value::Int(10)]),
+            Row::new(vec![Value::String("bia".into()), Value::Int(20)]),
+        ],
+    };
+
+    let engine = SqlLikeQueryEngine;
+    let result = engine
+        .execute(
+            &source,
+            "SELECT name, (SELECT age FROM planilha WHERE name = 'bia') AS idade_bia FROM planilha WHERE name = 'ana'",
+        )
+        .expect("query should execute")
+        .collect::<Vec<_>>();
+
+    assert_eq!(result.len(), 1);
+    assert_eq!(
+        result[0].values,
+        vec![Value::String("ana".into()), Value::Int(20)]
+    );
+}
+
+#[test]
+fn returns_error_when_scalar_subquery_returns_multiple_rows() {
+    let source = MockSource {
+        schema: Schema::new(vec![Column::new("name"), Column::new("age")]),
+        rows: vec![
+            Row::new(vec![Value::String("ana".into()), Value::Int(10)]),
+            Row::new(vec![Value::String("bia".into()), Value::Int(20)]),
+        ],
+    };
+
+    let engine = SqlLikeQueryEngine;
+    let result = engine.execute(
+        &source,
+        "SELECT name, (SELECT age FROM planilha) AS qualquer_idade FROM planilha WHERE name = 'ana'",
+    );
+
+    match result {
+        Err(QueryError::UnsupportedSelect(_)) => {}
+        Err(other) => panic!("unexpected error: {other}"),
+        Ok(_) => panic!("expected unsupported select error"),
+    }
+}
+
+#[test]
+fn executes_order_by_with_scalar_subquery_projection_by_position() {
+    let source = MockSource {
+        schema: Schema::new(vec![Column::new("name"), Column::new("age")]),
+        rows: vec![
+            Row::new(vec![Value::String("ana".into()), Value::Int(10)]),
+            Row::new(vec![Value::String("bia".into()), Value::Int(30)]),
+            Row::new(vec![Value::String("caio".into()), Value::Int(20)]),
+        ],
+    };
+
+    let engine = SqlLikeQueryEngine;
+    let result = engine
+        .execute(
+            &source,
+            "SELECT name, (SELECT p2.age FROM planilha p2 WHERE p2.name = planilha.name) AS own_age FROM planilha ORDER BY 2 DESC",
+        )
+        .expect("query should execute")
+        .collect::<Vec<_>>();
+
+    assert_eq!(result.len(), 3);
+    assert_eq!(result[0].values, vec![Value::String("bia".into()), Value::Int(30)]);
+    assert_eq!(result[1].values, vec![Value::String("caio".into()), Value::Int(20)]);
+    assert_eq!(result[2].values, vec![Value::String("ana".into()), Value::Int(10)]);
+}
+
+#[test]
+fn executes_order_by_non_projected_column_with_scalar_subquery_projection() {
+    let source = MockSource {
+        schema: Schema::new(vec![Column::new("name"), Column::new("age")]),
+        rows: vec![
+            Row::new(vec![Value::String("ana".into()), Value::Int(10)]),
+            Row::new(vec![Value::String("bia".into()), Value::Int(30)]),
+            Row::new(vec![Value::String("caio".into()), Value::Int(20)]),
+        ],
+    };
+
+    let engine = SqlLikeQueryEngine;
+    let result = engine
+        .execute(
+            &source,
+            "SELECT name, (SELECT p2.age FROM planilha p2 WHERE p2.name = planilha.name) AS own_age FROM planilha ORDER BY age DESC",
+        )
+        .expect("query should execute")
+        .collect::<Vec<_>>();
+
+    assert_eq!(result.len(), 3);
+    assert_eq!(result[0].values, vec![Value::String("bia".into()), Value::Int(30)]);
+    assert_eq!(result[1].values, vec![Value::String("caio".into()), Value::Int(20)]);
+    assert_eq!(result[2].values, vec![Value::String("ana".into()), Value::Int(10)]);
 }

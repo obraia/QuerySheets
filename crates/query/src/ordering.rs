@@ -79,6 +79,48 @@ pub(crate) fn apply_order_by_to_execution<'a>(
     })
 }
 
+pub(crate) fn order_projected_rows_with_source_fallback(
+    projected_with_source_rows: Vec<(Row, Row)>,
+    projected_schema: &Schema,
+    source_schema: &Schema,
+    order_by: &[OrderByExpr],
+    string_comparison_mode: StringComparisonMode,
+) -> Result<Vec<Row>, QueryError> {
+    if order_by.is_empty() {
+        return Ok(projected_with_source_rows
+            .into_iter()
+            .map(|(projected_row, _)| projected_row)
+            .collect::<Vec<_>>());
+    }
+
+    let mut sortable_rows = projected_with_source_rows
+        .into_iter()
+        .map(|(projected_row, source_row)| {
+            let keys = build_order_by_keys(
+                &projected_row,
+                projected_schema,
+                Some((&source_row, source_schema)),
+                order_by,
+            )?;
+
+            Ok(SortableRow {
+                row: projected_row,
+                keys,
+            })
+        })
+        .collect::<Result<Vec<_>, QueryError>>()?;
+
+    validate_order_by_types(order_by, &sortable_rows)?;
+    sortable_rows.sort_by(|left, right| {
+        compare_sortable_rows(left, right, order_by, string_comparison_mode)
+    });
+
+    Ok(sortable_rows
+        .into_iter()
+        .map(|sortable| sortable.row)
+        .collect::<Vec<_>>())
+}
+
 fn build_sortable_row(
     row: Row,
     schema: &Schema,

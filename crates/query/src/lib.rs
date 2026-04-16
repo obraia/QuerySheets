@@ -1,5 +1,8 @@
 use query_sheets_core::{DataSource, Row, Schema, Value};
-use sqlparser::ast::{BinaryOperator, Expr, JoinConstraint, JoinOperator, Select, TableFactor};
+use sqlparser::ast::{
+    BinaryOperator, Expr, JoinConstraint, JoinOperator, Query, Select, SelectItem, SetExpr,
+    TableFactor, Value as SqlValue,
+};
 use std::collections::{HashMap, HashSet};
 
 mod aggregation;
@@ -16,8 +19,11 @@ pub use parser::{TableReference, extract_table_name, extract_table_reference};
 use aggregation::{
     build_group_by_aggregation_plan, execute_group_by_aggregation, extract_group_by_column_indexes,
 };
-use expr::{eval_predicate, resolve_column, resolve_compound_column};
-use ordering::{apply_order_by_to_execution, execute_select_with_order_by};
+use expr::{eval_predicate, eval_value, resolve_column, resolve_compound_column};
+use ordering::{
+    apply_order_by_to_execution, execute_select_with_order_by,
+    order_projected_rows_with_source_fallback,
+};
 use projection::{build_projection, project_row};
 use text::normalize_text_case_insensitive;
 
@@ -180,6 +186,20 @@ fn execute_with_string_mode_and_resolver<'a, F>(
 where
     F: FnMut(&TableReference) -> Result<ResolvedTableData, QueryError>,
 {
+    execute_with_string_mode_and_resolver_dyn(
+        source,
+        query,
+        string_comparison_mode,
+        &mut table_resolver,
+    )
+}
+
+fn execute_with_string_mode_and_resolver_dyn<'a>(
+    source: &'a dyn DataSource,
+    query: &str,
+    string_comparison_mode: StringComparisonMode,
+    table_resolver: &mut dyn FnMut(&TableReference) -> Result<ResolvedTableData, QueryError>,
+) -> Result<QueryExecution<'a>, QueryError> {
     let parsed_query = parser::parse_select(query)?;
 
     if parsed_query.select.from.len() > 1 {
@@ -191,9 +211,14 @@ where
             source,
             &parsed_query.select,
             string_comparison_mode,
-            &mut table_resolver,
+            table_resolver,
         )?;
-        let execution = execute_parsed_select(&joined_source, &parsed_query, string_comparison_mode)?;
+        let execution = execute_parsed_select(
+            &joined_source,
+            &parsed_query,
+            string_comparison_mode,
+            table_resolver,
+        )?;
         let rows = execution.rows.collect::<Vec<_>>();
 
         return Ok(QueryExecution {
@@ -202,15 +227,27 @@ where
         });
     }
 
-    execute_parsed_select(source, &parsed_query, string_comparison_mode)
+    execute_parsed_select(
+        source,
+        &parsed_query,
+        string_comparison_mode,
+        table_resolver,
+    )
 }
 
 fn execute_parsed_select<'a>(
     source: &'a dyn DataSource,
     parsed_query: &parser::ParsedSelect,
     string_comparison_mode: StringComparisonMode,
+    table_resolver: &mut dyn FnMut(&TableReference) -> Result<ResolvedTableData, QueryError>,
 ) -> Result<QueryExecution<'a>, QueryError> {
     let schema = source.schema().clone();
+    let where_expr = materialize_subqueries_in_expr(
+        parsed_query.select.selection.as_ref(),
+        source,
+        string_comparison_mode,
+        table_resolver,
+    )?;
 
     if let Some(group_by_columns) =
         extract_group_by_column_indexes(&schema, &parsed_query.select.group_by)?
@@ -220,7 +257,7 @@ fn execute_parsed_select<'a>(
         let mut execution = execute_group_by_aggregation(
             source,
             &schema,
-            parsed_query.select.selection.as_ref(),
+            where_expr.as_ref(),
             plan,
             string_comparison_mode,
         )?;
@@ -230,7 +267,22 @@ fn execute_parsed_select<'a>(
     }
 
     let (projection, projected_schema) = build_projection(&schema, &parsed_query.select.projection)?;
-    let where_expr = parsed_query.select.selection.clone();
+    let projection_has_scalar_subquery = projection_uses_scalar_subquery(&parsed_query.select.projection);
+
+    if projection_has_scalar_subquery {
+        let mut execution = execute_select_with_scalar_subqueries(
+            source,
+            &schema,
+            where_expr.as_ref(),
+            &projection,
+            projected_schema,
+            &parsed_query.order_by,
+            string_comparison_mode,
+            table_resolver,
+        )?;
+        execution = apply_pagination_to_execution(execution, parsed_query.pagination);
+        return Ok(execution);
+    }
 
     let mut execution = if parsed_query.order_by.is_empty() {
         let iter = source.scan().filter_map(move |row| {
@@ -268,6 +320,664 @@ fn execute_parsed_select<'a>(
     Ok(execution)
 }
 
+fn execute_select_with_scalar_subqueries<'a>(
+    source: &'a dyn DataSource,
+    source_schema: &Schema,
+    where_expr: Option<&Expr>,
+    projection: &[projection::ProjectionItem],
+    projected_schema: Schema,
+    order_by: &[sqlparser::ast::OrderByExpr],
+    string_comparison_mode: StringComparisonMode,
+    table_resolver: &mut dyn FnMut(&TableReference) -> Result<ResolvedTableData, QueryError>,
+) -> Result<QueryExecution<'a>, QueryError> {
+    let mut projected_with_source_rows = Vec::new();
+
+    for source_row in source.scan() {
+        if let Some(expr) = where_expr {
+            let keep = eval_predicate(expr, &source_row, source_schema, string_comparison_mode)?;
+            if !keep {
+                continue;
+            }
+        }
+
+        let values = evaluate_projection_with_scalar_subqueries(
+            projection,
+            &source_row,
+            source_schema,
+            source,
+            string_comparison_mode,
+            table_resolver,
+        )?;
+
+        projected_with_source_rows.push((Row::new(values), source_row));
+    }
+
+    let rows = order_projected_rows_with_source_fallback(
+        projected_with_source_rows,
+        &projected_schema,
+        source_schema,
+        order_by,
+        string_comparison_mode,
+    )?;
+
+    Ok(QueryExecution {
+        schema: projected_schema,
+        rows: Box::new(rows.into_iter()),
+    })
+}
+
+fn evaluate_projection_with_scalar_subqueries(
+    projection: &[projection::ProjectionItem],
+    source_row: &Row,
+    source_schema: &Schema,
+    source: &dyn DataSource,
+    string_comparison_mode: StringComparisonMode,
+    table_resolver: &mut dyn FnMut(&TableReference) -> Result<ResolvedTableData, QueryError>,
+) -> Result<Vec<Value>, QueryError> {
+    let mut values = Vec::new();
+
+    for item in projection {
+        match item {
+            projection::ProjectionItem::Wildcard => {
+                values.extend(source_row.values.iter().cloned());
+            }
+            projection::ProjectionItem::Expr(expr) => {
+                let rewritten = rewrite_scalar_subqueries_for_projection(
+                    expr,
+                    source,
+                    source_row,
+                    source_schema,
+                    string_comparison_mode,
+                    table_resolver,
+                )?;
+                let value = eval_value(&rewritten, source_row, source_schema)
+                    .map_err(|_| QueryError::UnsupportedSelect(expr.to_string()))?;
+                values.push(value);
+            }
+        }
+    }
+
+    Ok(values)
+}
+
+fn rewrite_scalar_subqueries_for_projection(
+    expr: &Expr,
+    source: &dyn DataSource,
+    outer_row: &Row,
+    outer_schema: &Schema,
+    string_comparison_mode: StringComparisonMode,
+    table_resolver: &mut dyn FnMut(&TableReference) -> Result<ResolvedTableData, QueryError>,
+) -> Result<Expr, QueryError> {
+    match expr {
+        Expr::Subquery(subquery) => {
+            let value = execute_scalar_subquery_value(
+                subquery,
+                source,
+                string_comparison_mode,
+                table_resolver,
+                outer_row,
+                outer_schema,
+            )?;
+            Ok(value_to_sql_expr(value))
+        }
+        Expr::BinaryOp { left, op, right } => {
+            let rewritten_left = rewrite_scalar_subqueries_for_projection(
+                left,
+                source,
+                outer_row,
+                outer_schema,
+                string_comparison_mode,
+                table_resolver,
+            )?;
+            let rewritten_right = rewrite_scalar_subqueries_for_projection(
+                right,
+                source,
+                outer_row,
+                outer_schema,
+                string_comparison_mode,
+                table_resolver,
+            )?;
+
+            Ok(Expr::BinaryOp {
+                left: Box::new(rewritten_left),
+                op: op.clone(),
+                right: Box::new(rewritten_right),
+            })
+        }
+        Expr::Nested(inner) => Ok(Expr::Nested(Box::new(
+            rewrite_scalar_subqueries_for_projection(
+                inner,
+                source,
+                outer_row,
+                outer_schema,
+                string_comparison_mode,
+                table_resolver,
+            )?,
+        ))),
+        Expr::UnaryOp { op, expr: inner } => Ok(Expr::UnaryOp {
+            op: op.clone(),
+            expr: Box::new(rewrite_scalar_subqueries_for_projection(
+                inner,
+                source,
+                outer_row,
+                outer_schema,
+                string_comparison_mode,
+                table_resolver,
+            )?),
+        }),
+        Expr::Cast {
+            kind,
+            expr: inner,
+            data_type,
+            format,
+        } => Ok(Expr::Cast {
+            kind: kind.clone(),
+            expr: Box::new(rewrite_scalar_subqueries_for_projection(
+                inner,
+                source,
+                outer_row,
+                outer_schema,
+                string_comparison_mode,
+                table_resolver,
+            )?),
+            data_type: data_type.clone(),
+            format: format.clone(),
+        }),
+        Expr::InList {
+            expr: inner,
+            list,
+            negated,
+        } => {
+            let rewritten_inner = rewrite_scalar_subqueries_for_projection(
+                inner,
+                source,
+                outer_row,
+                outer_schema,
+                string_comparison_mode,
+                table_resolver,
+            )?;
+            let rewritten_list = list
+                .iter()
+                .map(|item| {
+                    rewrite_scalar_subqueries_for_projection(
+                        item,
+                        source,
+                        outer_row,
+                        outer_schema,
+                        string_comparison_mode,
+                        table_resolver,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            Ok(Expr::InList {
+                expr: Box::new(rewritten_inner),
+                list: rewritten_list,
+                negated: *negated,
+            })
+        }
+        Expr::InSubquery {
+            expr: inner,
+            subquery,
+            negated,
+        } => {
+            let rewritten_inner = rewrite_scalar_subqueries_for_projection(
+                inner,
+                source,
+                outer_row,
+                outer_schema,
+                string_comparison_mode,
+                table_resolver,
+            )?;
+            let values = execute_subquery_values(
+                subquery,
+                source,
+                string_comparison_mode,
+                table_resolver,
+                Some((outer_row, outer_schema)),
+            )?;
+            let list = values.into_iter().map(value_to_sql_expr).collect::<Vec<_>>();
+
+            Ok(Expr::InList {
+                expr: Box::new(rewritten_inner),
+                list,
+                negated: *negated,
+            })
+        }
+        _ => Ok(expr.clone()),
+    }
+}
+
+fn projection_uses_scalar_subquery(select_items: &[SelectItem]) -> bool {
+    select_items.iter().any(|item| match item {
+        SelectItem::UnnamedExpr(expr) => expr_contains_scalar_subquery(expr),
+        SelectItem::ExprWithAlias { expr, .. } => expr_contains_scalar_subquery(expr),
+        _ => false,
+    })
+}
+
+fn expr_contains_scalar_subquery(expr: &Expr) -> bool {
+    match expr {
+        Expr::Subquery(_) => true,
+        Expr::BinaryOp { left, right, .. } => {
+            expr_contains_scalar_subquery(left) || expr_contains_scalar_subquery(right)
+        }
+        Expr::Nested(inner) => expr_contains_scalar_subquery(inner),
+        Expr::UnaryOp { expr: inner, .. } => expr_contains_scalar_subquery(inner),
+        Expr::Cast { expr: inner, .. } => expr_contains_scalar_subquery(inner),
+        Expr::InList { expr: inner, list, .. } => {
+            expr_contains_scalar_subquery(inner)
+                || list.iter().any(expr_contains_scalar_subquery)
+        }
+        Expr::InSubquery { .. } => true,
+        _ => false,
+    }
+}
+
+fn materialize_subqueries_in_expr(
+    expr: Option<&Expr>,
+    source: &dyn DataSource,
+    string_comparison_mode: StringComparisonMode,
+    table_resolver: &mut dyn FnMut(&TableReference) -> Result<ResolvedTableData, QueryError>,
+) -> Result<Option<Expr>, QueryError> {
+    expr
+        .map(|value| rewrite_expr_subqueries(value, source, string_comparison_mode, table_resolver))
+        .transpose()
+}
+
+fn rewrite_expr_subqueries(
+    expr: &Expr,
+    source: &dyn DataSource,
+    string_comparison_mode: StringComparisonMode,
+    table_resolver: &mut dyn FnMut(&TableReference) -> Result<ResolvedTableData, QueryError>,
+) -> Result<Expr, QueryError> {
+    match expr {
+        Expr::InSubquery {
+            expr: inner,
+            subquery,
+            negated,
+        } => {
+            let rewritten_inner = rewrite_expr_subqueries(
+                inner,
+                source,
+                string_comparison_mode,
+                table_resolver,
+            )?;
+            let values = execute_subquery_values(
+                subquery,
+                source,
+                string_comparison_mode,
+                table_resolver,
+                None,
+            )?;
+            let list = values.into_iter().map(value_to_sql_expr).collect::<Vec<_>>();
+
+            Ok(Expr::InList {
+                expr: Box::new(rewritten_inner),
+                list,
+                negated: *negated,
+            })
+        }
+        Expr::InList {
+            expr: inner,
+            list,
+            negated,
+        } => {
+            let rewritten_inner = rewrite_expr_subqueries(
+                inner,
+                source,
+                string_comparison_mode,
+                table_resolver,
+            )?;
+            let rewritten_list = list
+                .iter()
+                .map(|item| {
+                    rewrite_expr_subqueries(item, source, string_comparison_mode, table_resolver)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            Ok(Expr::InList {
+                expr: Box::new(rewritten_inner),
+                list: rewritten_list,
+                negated: *negated,
+            })
+        }
+        Expr::BinaryOp { left, op, right } => {
+            let rewritten_left =
+                rewrite_expr_subqueries(left, source, string_comparison_mode, table_resolver)?;
+            let rewritten_right =
+                rewrite_expr_subqueries(right, source, string_comparison_mode, table_resolver)?;
+
+            Ok(Expr::BinaryOp {
+                left: Box::new(rewritten_left),
+                op: op.clone(),
+                right: Box::new(rewritten_right),
+            })
+        }
+        Expr::Nested(inner) => Ok(Expr::Nested(Box::new(rewrite_expr_subqueries(
+            inner,
+            source,
+            string_comparison_mode,
+            table_resolver,
+        )?))),
+        _ => Ok(expr.clone()),
+    }
+}
+
+fn execute_subquery_values(
+    subquery: &sqlparser::ast::Query,
+    source: &dyn DataSource,
+    string_comparison_mode: StringComparisonMode,
+    table_resolver: &mut dyn FnMut(&TableReference) -> Result<ResolvedTableData, QueryError>,
+    outer_context: Option<(&Row, &Schema)>,
+) -> Result<Vec<Value>, QueryError> {
+    let (schema, rows) = execute_subquery_rows(
+        subquery,
+        source,
+        string_comparison_mode,
+        table_resolver,
+        outer_context,
+    )?;
+
+    if schema.columns.len() != 1 {
+        return Err(QueryError::UnsupportedWhere(
+            "subquery in IN/NOT IN must return exactly one column".to_string(),
+        ));
+    }
+
+    Ok(rows
+        .into_iter()
+        .map(|row| row.values.into_iter().next().unwrap_or(Value::Null))
+        .collect::<Vec<_>>())
+}
+
+fn execute_scalar_subquery_value(
+    subquery: &sqlparser::ast::Query,
+    source: &dyn DataSource,
+    string_comparison_mode: StringComparisonMode,
+    table_resolver: &mut dyn FnMut(&TableReference) -> Result<ResolvedTableData, QueryError>,
+    outer_row: &Row,
+    outer_schema: &Schema,
+) -> Result<Value, QueryError> {
+    let (schema, rows) = execute_subquery_rows(
+        subquery,
+        source,
+        string_comparison_mode,
+        table_resolver,
+        Some((outer_row, outer_schema)),
+    )?;
+
+    if schema.columns.len() != 1 {
+        return Err(QueryError::UnsupportedSelect(
+            "scalar subquery must return exactly one column".to_string(),
+        ));
+    }
+
+    match rows.as_slice() {
+        [] => Ok(Value::Null),
+        [single] => Ok(single.values.first().cloned().unwrap_or(Value::Null)),
+        _ => Err(QueryError::UnsupportedSelect(
+            "scalar subquery returned more than one row".to_string(),
+        )),
+    }
+}
+
+fn execute_subquery_rows(
+    subquery: &sqlparser::ast::Query,
+    source: &dyn DataSource,
+    string_comparison_mode: StringComparisonMode,
+    table_resolver: &mut dyn FnMut(&TableReference) -> Result<ResolvedTableData, QueryError>,
+    outer_context: Option<(&Row, &Schema)>,
+) -> Result<(Schema, Vec<Row>), QueryError> {
+    let rewritten_query = if let Some((outer_row, outer_schema)) = outer_context {
+        rewrite_query_with_outer_refs(subquery, outer_row, outer_schema)?
+    } else {
+        subquery.clone()
+    };
+
+    let sql = rewritten_query.to_string();
+    let resolved_source = if let Some(table_ref) = parser::extract_table_reference(&sql)? {
+        match table_resolver(&table_ref) {
+            Ok(data) => Some(InMemoryDataSource {
+                schema: data.schema,
+                rows: data.rows,
+            }),
+            Err(err @ QueryError::TableResolution(_)) => {
+                if source_schema_is_qualified(source.schema()) {
+                    return Err(err);
+                }
+
+                None
+            }
+            Err(err) => return Err(err),
+        }
+    } else {
+        None
+    };
+
+    let execution = if let Some(subquery_source) = resolved_source.as_ref() {
+        execute_with_string_mode_and_resolver_dyn(
+            subquery_source,
+            &sql,
+            string_comparison_mode,
+            table_resolver,
+        )?
+    } else {
+        execute_with_string_mode_and_resolver_dyn(
+            source,
+            &sql,
+            string_comparison_mode,
+            table_resolver,
+        )?
+    };
+
+    let schema = execution.schema;
+    let rows = execution.rows.collect::<Vec<_>>();
+    Ok((schema, rows))
+}
+
+fn source_schema_is_qualified(schema: &Schema) -> bool {
+    schema.columns.iter().any(|column| column.name.contains('.'))
+}
+
+fn rewrite_query_with_outer_refs(
+    query: &Query,
+    outer_row: &Row,
+    outer_schema: &Schema,
+) -> Result<Query, QueryError> {
+    let mut rewritten = query.clone();
+
+    let SetExpr::Select(select) = rewritten.body.as_mut() else {
+        return Ok(rewritten);
+    };
+
+    let local_aliases = select_local_aliases(select);
+
+    if let Some(selection) = &select.selection {
+        select.selection = Some(rewrite_expr_with_outer_refs(
+            selection,
+            outer_row,
+            outer_schema,
+            &local_aliases,
+        )?);
+    }
+
+    for item in &mut select.projection {
+        match item {
+            SelectItem::UnnamedExpr(expr) => {
+                *expr = rewrite_expr_with_outer_refs(expr, outer_row, outer_schema, &local_aliases)?;
+            }
+            SelectItem::ExprWithAlias { expr, .. } => {
+                *expr = rewrite_expr_with_outer_refs(expr, outer_row, outer_schema, &local_aliases)?;
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(order_by) = rewritten.order_by.as_mut() {
+        for order_item in &mut order_by.exprs {
+            order_item.expr = rewrite_expr_with_outer_refs(
+                &order_item.expr,
+                outer_row,
+                outer_schema,
+                &local_aliases,
+            )?;
+        }
+    }
+
+    Ok(rewritten)
+}
+
+fn select_local_aliases(select: &Select) -> HashSet<String> {
+    let mut aliases = HashSet::new();
+
+    if let Some(from) = select.from.first() {
+        register_alias_for_table_factor(&from.relation, &mut aliases);
+        for join in &from.joins {
+            register_alias_for_table_factor(&join.relation, &mut aliases);
+        }
+    }
+
+    aliases
+}
+
+fn register_alias_for_table_factor(relation: &TableFactor, aliases: &mut HashSet<String>) {
+    if let TableFactor::Table { name, alias, .. } = relation {
+        if let Some(alias_name) = alias.as_ref().map(|value| value.name.value.to_ascii_lowercase()) {
+            let _ = aliases.insert(alias_name);
+            return;
+        }
+
+        if let Some(last) = name.0.last() {
+            let _ = aliases.insert(last.value.to_ascii_lowercase());
+        }
+    }
+}
+
+fn rewrite_expr_with_outer_refs(
+    expr: &Expr,
+    outer_row: &Row,
+    outer_schema: &Schema,
+    local_aliases: &HashSet<String>,
+) -> Result<Expr, QueryError> {
+    match expr {
+        Expr::CompoundIdentifier(identifiers) => {
+            if identifiers.len() >= 2 {
+                let qualifier = identifiers[identifiers.len() - 2].value.to_ascii_lowercase();
+                if !local_aliases.contains(&qualifier) {
+                    if let Ok(index) = resolve_compound_column(outer_schema, identifiers) {
+                        let value = outer_row.values.get(index).cloned().unwrap_or(Value::Null);
+                        return Ok(value_to_sql_expr(value));
+                    }
+                }
+            }
+
+            Ok(expr.clone())
+        }
+        Expr::BinaryOp { left, op, right } => Ok(Expr::BinaryOp {
+            left: Box::new(rewrite_expr_with_outer_refs(
+                left,
+                outer_row,
+                outer_schema,
+                local_aliases,
+            )?),
+            op: op.clone(),
+            right: Box::new(rewrite_expr_with_outer_refs(
+                right,
+                outer_row,
+                outer_schema,
+                local_aliases,
+            )?),
+        }),
+        Expr::Nested(inner) => Ok(Expr::Nested(Box::new(rewrite_expr_with_outer_refs(
+            inner,
+            outer_row,
+            outer_schema,
+            local_aliases,
+        )?))),
+        Expr::UnaryOp { op, expr: inner } => Ok(Expr::UnaryOp {
+            op: op.clone(),
+            expr: Box::new(rewrite_expr_with_outer_refs(
+                inner,
+                outer_row,
+                outer_schema,
+                local_aliases,
+            )?),
+        }),
+        Expr::Cast {
+            kind,
+            expr: inner,
+            data_type,
+            format,
+        } => Ok(Expr::Cast {
+            kind: kind.clone(),
+            expr: Box::new(rewrite_expr_with_outer_refs(
+                inner,
+                outer_row,
+                outer_schema,
+                local_aliases,
+            )?),
+            data_type: data_type.clone(),
+            format: format.clone(),
+        }),
+        Expr::InList {
+            expr: inner,
+            list,
+            negated,
+        } => {
+            let rewritten_inner = rewrite_expr_with_outer_refs(
+                inner,
+                outer_row,
+                outer_schema,
+                local_aliases,
+            )?;
+            let rewritten_list = list
+                .iter()
+                .map(|item| rewrite_expr_with_outer_refs(item, outer_row, outer_schema, local_aliases))
+                .collect::<Result<Vec<_>, _>>()?;
+
+            Ok(Expr::InList {
+                expr: Box::new(rewritten_inner),
+                list: rewritten_list,
+                negated: *negated,
+            })
+        }
+        Expr::InSubquery {
+            expr: inner,
+            subquery,
+            negated,
+        } => Ok(Expr::InSubquery {
+            expr: Box::new(rewrite_expr_with_outer_refs(
+                inner,
+                outer_row,
+                outer_schema,
+                local_aliases,
+            )?),
+            subquery: Box::new(rewrite_query_with_outer_refs(subquery, outer_row, outer_schema)?),
+            negated: *negated,
+        }),
+        _ => Ok(expr.clone()),
+    }
+}
+
+fn value_to_sql_expr(value: Value) -> Expr {
+    let sql_value = match value {
+        Value::Int(v) => SqlValue::Number(v.to_string(), false),
+        Value::Float(v) => {
+            if v.is_finite() {
+                SqlValue::Number(v.to_string(), false)
+            } else {
+                SqlValue::Null
+            }
+        }
+        Value::String(v) => SqlValue::SingleQuotedString(v),
+        Value::Bool(v) => SqlValue::Boolean(v),
+        Value::Null => SqlValue::Null,
+    };
+
+    Expr::Value(sql_value)
+}
+
 fn query_uses_join(select: &Select) -> bool {
     select
         .from
@@ -276,15 +986,12 @@ fn query_uses_join(select: &Select) -> bool {
         .unwrap_or(false)
 }
 
-fn build_joined_source<F>(
+fn build_joined_source(
     base_source: &dyn DataSource,
     select: &Select,
     string_comparison_mode: StringComparisonMode,
-    table_resolver: &mut F,
-) -> Result<InMemoryDataSource, QueryError>
-where
-    F: FnMut(&TableReference) -> Result<ResolvedTableData, QueryError>,
-{
+    table_resolver: &mut dyn FnMut(&TableReference) -> Result<ResolvedTableData, QueryError>,
+) -> Result<InMemoryDataSource, QueryError> {
     let from = select.from.first().ok_or(QueryError::MissingFrom)?;
     let pushdown_predicates = extract_alias_pushdown_predicates(select.selection.as_ref());
 

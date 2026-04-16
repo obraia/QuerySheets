@@ -99,6 +99,7 @@ fn validate_projection_expr(schema: &Schema, expr: &Expr) -> Result<(), QueryErr
             validate_projection_expr(schema, inner)
         }
         Expr::Nested(inner) => validate_projection_expr(schema, inner),
+        Expr::Subquery(_) => Ok(()),
         Expr::UnaryOp { op, expr: inner } => match op {
             UnaryOperator::Plus | UnaryOperator::Minus => validate_projection_expr(schema, inner),
             _ => Err(QueryError::UnsupportedSelect(expr.to_string())),
