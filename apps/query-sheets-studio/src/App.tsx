@@ -18,6 +18,27 @@ const defaultSql = [
   "LIMIT 100"
 ].join("\n");
 
+const MIN_QUERY_LOADING_MS = 280;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function waitForUiPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") {
+      setTimeout(resolve, 0);
+      return;
+    }
+
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => resolve());
+    });
+  });
+}
+
 const SqlEditorPanel = lazy(async () => {
   const module = await import("./components/SqlEditorPanel.js");
   return { default: module.SqlEditorPanel };
@@ -98,10 +119,16 @@ export function App(): JSX.Element {
       return;
     }
 
+    const loadingStart = performance.now();
+
     try {
       setIsRunningQuery(true);
       setError(null);
       setStatus({ message: "Running query...", isError: false });
+
+      // Give React one paint cycle so the loading indicator is visible
+      // before the IPC/query work starts.
+      await waitForUiPaint();
 
       const queryResult = await executeSql(trimmedSql, false, 2000);
       setResult(queryResult);
@@ -117,6 +144,11 @@ export function App(): JSX.Element {
       setError(String(err));
       setStatus({ message: "Query failed", isError: true });
     } finally {
+      const elapsed = performance.now() - loadingStart;
+      if (elapsed < MIN_QUERY_LOADING_MS) {
+        await sleep(MIN_QUERY_LOADING_MS - elapsed);
+      }
+
       setIsRunningQuery(false);
     }
   }
@@ -155,7 +187,7 @@ export function App(): JSX.Element {
             />
           </Suspense>
 
-          <ResultsPanel result={result} resultMeta={resultMeta} error={error} />
+          <ResultsPanel result={result} resultMeta={resultMeta} error={error} isLoading={isRunningQuery} />
 
           <StatusBar status={status} />
         </section>
