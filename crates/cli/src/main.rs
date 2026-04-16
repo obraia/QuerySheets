@@ -2,8 +2,8 @@ use clap::{Parser, Subcommand};
 use query_sheets_adapters::create_excel_source;
 use query_sheets_core::{DataSource, Row, Schema, Value};
 use query_sheets_query::{
-    ConfiguredSqlLikeQueryEngine, QueryEngine, SqlLikeQueryEngine, TableReference,
-    extract_table_name, extract_table_reference,
+    ConfiguredSqlLikeQueryEngine, QueryEngine, QueryError as QueryExecutionError,
+    ResolvedTableData, SqlLikeQueryEngine, TableReference, extract_table_reference,
 };
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
@@ -95,13 +95,25 @@ fn run_single_query(
     output: Option<String>,
     case_sensitive_strings: bool,
 ) -> Result<(), String> {
-    let table_from_sql = extract_table_name(sql).map_err(|err| err.to_string())?;
-    let chosen_sheet = sheet.or(table_from_sql);
+    let mut catalog = SessionCatalog::new(file)?;
 
-    let source = create_excel_source(file, chosen_sheet.as_deref()).map_err(|err| err.to_string())?;
+    let primary_source = if let Some(sheet_name) = sheet {
+        let source = create_excel_source(file, Some(&sheet_name)).map_err(|err| err.to_string())?;
+        CachedTableSource {
+            schema: source.schema().clone(),
+            rows: source.scan().collect::<Vec<_>>(),
+        }
+    } else {
+        catalog.source_for_query(sql)?.clone()
+    };
+
     let engine = SqlLikeQueryEngine.with_case_sensitive_strings(case_sensitive_strings);
     let mut execution = engine
-        .execute_with_schema(source.as_ref(), sql)
+        .execute_with_schema_and_resolver(&primary_source, sql, |table_ref| {
+            catalog
+                .resolved_table_data(table_ref)
+                .map_err(QueryExecutionError::TableResolution)
+        })
         .map_err(|err| err.to_string())?;
 
     if let Some(output_path) = output.as_deref() {
@@ -237,15 +249,19 @@ fn process_session_input(
 
     let sql = input.trim_end_matches(';').trim();
 
-    let source = match catalog.source_for_query(sql) {
-        Ok(source) => source,
+    let primary_source = match catalog.source_for_query(sql) {
+        Ok(source) => source.clone(),
         Err(err) => {
             eprintln!("erro: {err}");
             return true;
         }
     };
 
-    let mut execution = match engine.execute_with_schema(source, sql) {
+    let mut execution = match engine.execute_with_schema_and_resolver(&primary_source, sql, |table_ref| {
+        catalog
+            .resolved_table_data(table_ref)
+            .map_err(QueryExecutionError::TableResolution)
+    }) {
         Ok(execution) => execution,
         Err(err) => {
             eprintln!("erro: {err}");
@@ -395,7 +411,22 @@ impl SessionCatalog {
             .map_err(|err| err.to_string())?
             .ok_or_else(|| "query must include a table in FROM".to_string())?;
 
-        let (file_alias, file_path, table_name) = self.resolve_table_reference(&table_ref)?;
+        self.source_for_table_reference(&table_ref)
+    }
+
+    fn resolved_table_data(&mut self, table_ref: &TableReference) -> Result<ResolvedTableData, String> {
+        let source = self.source_for_table_reference(table_ref)?;
+        Ok(ResolvedTableData {
+            schema: source.schema.clone(),
+            rows: source.rows.clone(),
+        })
+    }
+
+    fn source_for_table_reference(
+        &mut self,
+        table_ref: &TableReference,
+    ) -> Result<&CachedTableSource, String> {
+        let (file_alias, file_path, table_name) = self.resolve_table_reference(table_ref)?;
         let cache_key = build_cache_key(&file_alias, &table_name);
 
         if !self.cache.contains_key(&cache_key) {

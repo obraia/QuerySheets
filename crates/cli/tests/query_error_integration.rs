@@ -1,7 +1,9 @@
 mod common;
 
 use assert_cmd::Command;
-use common::{create_customers_fixture, create_customers_fixture_with_rows};
+use common::{
+    create_customers_fixture, create_customers_fixture_with_rows, create_customers_orders_fixture,
+};
 use std::error::Error;
 use tempfile::tempdir;
 
@@ -236,6 +238,28 @@ fn session_returns_error_for_folder_query_without_file_alias() -> Result<(), Box
 
     let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
     assert!(stderr.contains("in folder mode use FROM <arquivo>.<worksheet>"));
+
+    Ok(())
+}
+
+#[test]
+fn query_returns_error_for_unsupported_full_join() -> Result<(), Box<dyn Error>> {
+    let tmp = tempdir()?;
+    let fixture = tmp.path().join("customers_orders.xlsx");
+    create_customers_orders_fixture(&fixture)?;
+
+    let mut command = Command::cargo_bin("query-sheets")?;
+    let assert = command
+        .arg("query")
+        .arg("--file")
+        .arg(&fixture)
+        .arg("--sql")
+        .arg("SELECT c.CustomerName FROM Customers c FULL JOIN Orders o ON c.CustomerId = o.CustomerId")
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+    assert!(stderr.contains("only simple SELECT queries are supported"));
 
     Ok(())
 }

@@ -2,7 +2,8 @@ mod common;
 
 use common::{
     create_activity_time_fixture, create_customers_fixture, create_customers_fixture_with_rows,
-    create_sales_fixture, run_cli_query, run_cli_query_with_case_sensitive_strings,
+    create_customers_orders_fixture, create_sales_fixture, run_cli_query,
+    run_cli_query_with_case_sensitive_strings,
     run_cli_session,
 };
 use std::error::Error;
@@ -276,6 +277,59 @@ fn query_outputs_rows_with_case_sensitive_strings_flag() -> Result<(), Box<dyn E
 
     assert_eq!(lines.len(), 1);
     assert_eq!(lines[0], "CustomerId\tSegment");
+
+    Ok(())
+}
+
+#[test]
+fn query_outputs_rows_with_inner_join_between_worksheets() -> Result<(), Box<dyn Error>> {
+    let tmp = tempdir()?;
+    let fixture = tmp.path().join("customers_orders.xlsx");
+    create_customers_orders_fixture(&fixture)?;
+
+    let sql = "SELECT c.CustomerName, o.Amount FROM Customers c JOIN Orders o ON c.CustomerId = o.CustomerId ORDER BY o.Amount";
+    let stdout = run_cli_query(&fixture, sql, None, true)?;
+    let lines = stdout.lines().collect::<Vec<_>>();
+
+    assert_eq!(lines.len(), 4);
+    assert_eq!(lines[0], "CustomerName\tAmount");
+    assert_eq!(lines[1], "Bob\t90");
+    assert_eq!(lines[2], "Alice\t150");
+    assert_eq!(lines[3], "Alice\t210");
+
+    Ok(())
+}
+
+#[test]
+fn query_outputs_rows_with_left_join_unmatched_row() -> Result<(), Box<dyn Error>> {
+    let tmp = tempdir()?;
+    let fixture = tmp.path().join("customers_orders.xlsx");
+    create_customers_orders_fixture(&fixture)?;
+
+    let sql = "SELECT c.CustomerName FROM Customers c LEFT JOIN Orders o ON c.CustomerId = o.CustomerId WHERE c.CustomerId = 'C-003'";
+    let stdout = run_cli_query(&fixture, sql, None, true)?;
+    let lines = stdout.lines().collect::<Vec<_>>();
+
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0], "CustomerName");
+    assert_eq!(lines[1], "Carla");
+
+    Ok(())
+}
+
+#[test]
+fn query_outputs_rows_with_right_join_unmatched_row() -> Result<(), Box<dyn Error>> {
+    let tmp = tempdir()?;
+    let fixture = tmp.path().join("customers_orders.xlsx");
+    create_customers_orders_fixture(&fixture)?;
+
+    let sql = "SELECT o.OrderId FROM Customers c RIGHT JOIN Orders o ON c.CustomerId = o.CustomerId WHERE o.CustomerId = 'C-999'";
+    let stdout = run_cli_query(&fixture, sql, None, true)?;
+    let lines = stdout.lines().collect::<Vec<_>>();
+
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0], "OrderId");
+    assert_eq!(lines[1], "O-999");
 
     Ok(())
 }

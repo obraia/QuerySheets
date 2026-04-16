@@ -20,4 +20,8 @@ pub enum QueryError {
     ColumnNotFound(String),
     #[error("unsupported WHERE expression: {0}")]
     UnsupportedWhere(String),
+    #[error("ambiguous column reference: {0}")]
+    AmbiguousColumn(String),
+    #[error("failed to resolve table for query: {0}")]
+    TableResolution(String),
 }

@@ -121,6 +121,42 @@ pub fn create_multi_sheet_customers_fixture(path: &Path) -> Result<(), Box<dyn E
     Ok(())
 }
 
+pub fn create_customers_orders_fixture(path: &Path) -> Result<(), Box<dyn Error>> {
+    let mut workbook = Workbook::new();
+
+    let customers = workbook.add_worksheet();
+    customers.set_name("Customers")?;
+    customers.write_string(0, 0, "CustomerId")?;
+    customers.write_string(0, 1, "CustomerName")?;
+    customers.write_string(1, 0, "C-001")?;
+    customers.write_string(1, 1, "Alice")?;
+    customers.write_string(2, 0, "C-002")?;
+    customers.write_string(2, 1, "Bob")?;
+    customers.write_string(3, 0, "C-003")?;
+    customers.write_string(3, 1, "Carla")?;
+
+    let orders = workbook.add_worksheet();
+    orders.set_name("Orders")?;
+    orders.write_string(0, 0, "OrderId")?;
+    orders.write_string(0, 1, "CustomerId")?;
+    orders.write_string(0, 2, "Amount")?;
+    orders.write_string(1, 0, "O-100")?;
+    orders.write_string(1, 1, "C-001")?;
+    orders.write_number(1, 2, 150.0)?;
+    orders.write_string(2, 0, "O-101")?;
+    orders.write_string(2, 1, "C-002")?;
+    orders.write_number(2, 2, 90.0)?;
+    orders.write_string(3, 0, "O-102")?;
+    orders.write_string(3, 1, "C-001")?;
+    orders.write_number(3, 2, 210.0)?;
+    orders.write_string(4, 0, "O-999")?;
+    orders.write_string(4, 1, "C-999")?;
+    orders.write_number(4, 2, 42.0)?;
+
+    workbook.save(path)?;
+    Ok(())
+}
+
 pub fn run_cli_query(
     file: &Path,
     sql: &str,

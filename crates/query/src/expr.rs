@@ -13,6 +13,19 @@ pub(crate) fn resolve_compound_column(schema: &Schema, identifiers: &[Ident]) ->
         return Err(QueryError::ColumnNotFound("".to_string()));
     };
 
+    if identifiers.len() >= 2 {
+        let qualifier = &identifiers[identifiers.len() - 2].value;
+        let qualified_name = format!("{qualifier}.{}", last.value);
+
+        if let Some(index) = schema
+            .columns
+            .iter()
+            .position(|column| column.name.eq_ignore_ascii_case(&qualified_name))
+        {
+            return Ok(index);
+        }
+    }
+
     resolve_column_name(schema, &last.value)
 }
 
@@ -129,9 +142,29 @@ pub(crate) fn sql_literal_to_value(value: &SqlValue) -> Result<Value, QueryError
 }
 
 fn resolve_column_name(schema: &Schema, column_name: &str) -> Result<usize, QueryError> {
-    schema
-        .index_of(column_name)
-        .ok_or_else(|| QueryError::ColumnNotFound(column_name.to_string()))
+    if let Some(index) = schema.index_of(column_name) {
+        return Ok(index);
+    }
+
+    let suffix_matches = schema
+        .columns
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, column)| {
+            let (_, suffix) = column.name.rsplit_once('.')?;
+            if suffix.eq_ignore_ascii_case(column_name) {
+                Some(idx)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+
+    match suffix_matches.as_slice() {
+        [single] => Ok(*single),
+        [] => Err(QueryError::ColumnNotFound(column_name.to_string())),
+        _ => Err(QueryError::AmbiguousColumn(column_name.to_string())),
+    }
 }
 
 fn eval_arithmetic_value(op: &BinaryOperator, left: Value, right: Value) -> Result<Value, QueryError> {

@@ -21,6 +21,7 @@ Implemented today:
 - Conversion expressions via `CAST(... AS ...)`
 - Projected schema support (used by CLI header output)
 - Aggregations with `GROUP BY` using `COUNT(*)`, `COUNT(column)`, `SUM(column)`, `AVG(column)`, `STDDEV(column)`, `MIN(column)`, and `MAX(column)`
+- `INNER JOIN ... ON ...`, `LEFT JOIN ... ON ...`, and `RIGHT JOIN ... ON ...` across worksheets/tables resolved by query context
 - Ordering with `ORDER BY` (`ASC`/`DESC`, optional `NULLS FIRST`/`NULLS LAST`)
 - Pagination with `LIMIT` and `OFFSET`
 - CLI with `query` and `session` commands, plus `--sheet`, `--header`, and `--case-sensitive-strings`
@@ -232,6 +233,10 @@ Supported:
   - `MIN(column)`
   - `MAX(column)`
   - aggregate arguments can use casted expressions, e.g. `AVG(CAST(Tempo AS FLOAT))`
+- Joins:
+  - `INNER JOIN`, `LEFT JOIN`, and `RIGHT JOIN` with `ON` predicate
+  - table aliases in `FROM`/`JOIN` are supported
+  - `FULL JOIN`, `USING`, and `NATURAL JOIN` are not supported yet
 - Pagination:
   - `LIMIT <positive integer>`
   - `OFFSET <non-negative integer>`
@@ -243,7 +248,7 @@ Supported:
   - in non-aggregated queries, `ORDER BY` can reference columns not present in `SELECT`
 
 Not supported yet:
-- joins
+- `FULL` outer joins, semi/anti joins, and advanced join clauses (`USING`, `NATURAL`, etc.)
 - subqueries
 - additional aggregate functions (`VARIANCE`, `MEDIAN`, etc.)
 
@@ -298,6 +303,19 @@ Phase 4:
 ## Documentation Changelog
 
 Use this section to keep documentation changes visible over time.
+
+- 2026-04-15
+  - Added `RIGHT JOIN ... ON ...` support in query engine and CLI flows (`query` and `session`).
+  - Added test coverage for unmatched-row semantics in RIGHT JOIN.
+
+- 2026-04-15
+  - Added `LEFT JOIN ... ON ...` support in query engine and CLI flows (`query` and `session`).
+  - Added test coverage for unmatched-row semantics in LEFT JOIN.
+
+- 2026-04-15
+  - Added `INNER JOIN ... ON ...` support in query engine and CLI flows (`query` and `session`).
+  - Added join resolver path for loading additional tables during query execution.
+  - Added unit and integration tests for JOIN success/error scenarios.
 
 - 2026-04-15
   - Added incremental `session` CLI mode to execute multiple queries without restarting the process.
