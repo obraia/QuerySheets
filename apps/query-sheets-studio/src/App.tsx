@@ -20,6 +20,7 @@ const defaultSql = [
 ].join("\n");
 
 const MIN_QUERY_LOADING_MS = 280;
+const PAGE_SIZE_OPTIONS = [25, 50, 100, 250, 500];
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -53,6 +54,8 @@ export function App(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [isRunningQuery, setIsRunningQuery] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(100);
   const [status, setStatus] = useState<StatusMessage>({
     message: "Ready",
     isError: false
@@ -61,6 +64,31 @@ export function App(): JSX.Element {
   const folderPath = workspace?.root_path ?? "Open a folder with spreadsheets";
 
   const isBusy = useMemo(() => isRunningQuery || isExporting, [isExporting, isRunningQuery]);
+  const totalRows = result?.rows.length ?? 0;
+  const totalPages = useMemo(() => {
+    if (!result) {
+      return 1;
+    }
+
+    return Math.max(1, Math.ceil(result.rows.length / pageSize));
+  }, [pageSize, result]);
+  const hasNextPage = currentPage < totalPages;
+  const paginatedResult = useMemo<QueryResult | null>(() => {
+    if (!result) {
+      return null;
+    }
+
+    const from = (currentPage - 1) * pageSize;
+    const to = from + pageSize;
+    const pageRows = result.rows.slice(from, to);
+
+    return {
+      ...result,
+      rows: pageRows,
+      displayed_rows: pageRows.length,
+      truncated: false
+    };
+  }, [currentPage, pageSize, result]);
 
   async function handleOpenFolder(): Promise<void> {
     const folder = await open({ directory: true, multiple: false });
@@ -132,10 +160,11 @@ export function App(): JSX.Element {
       // before the IPC/query work starts.
       await waitForUiPaint();
 
-      const queryResult = await executeSql(trimmedSql, false, 2000);
+      const queryResult = await executeSql(trimmedSql, false);
       setResult(queryResult);
+      setCurrentPage(1);
       setResultMeta(
-        `${queryResult.displayed_rows} row(s) in ${queryResult.elapsed_ms} ms${
+        `${queryResult.displayed_rows} total row(s) in ${queryResult.elapsed_ms} ms${
           queryResult.truncated ? " (truncated)" : ""
         }`
       );
@@ -153,6 +182,31 @@ export function App(): JSX.Element {
 
       setIsRunningQuery(false);
     }
+  }
+
+  function handlePreviousPage(): void {
+    if (currentPage <= 1) {
+      return;
+    }
+
+    setCurrentPage((previous) => Math.max(1, previous - 1));
+  }
+
+  function handleNextPage(): void {
+    if (!hasNextPage) {
+      return;
+    }
+
+    setCurrentPage((previous) => Math.min(totalPages, previous + 1));
+  }
+
+  function handlePageSizeChange(nextPageSize: number): void {
+    if (nextPageSize === pageSize) {
+      return;
+    }
+
+    setPageSize(nextPageSize);
+    setCurrentPage(1);
   }
 
   async function handleExportQuery(format: ExportFormat): Promise<void> {
@@ -200,11 +254,11 @@ export function App(): JSX.Element {
   }
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_15%_20%,#eff6ff_0%,#f8fafc_35%,#fff7ed_100%)] text-slate-900">
-      <div className="mx-auto grid max-w-[1500px] grid-cols-1 gap-4 px-4 py-4 lg:grid-cols-[320px_minmax(0,1fr)] lg:px-6 lg:py-6">
+    <div className="h-screen overflow-hidden bg-[radial-gradient(circle_at_15%_20%,#eff6ff_0%,#f8fafc_35%,#fff7ed_100%)] text-slate-900">
+      <div className="mx-auto grid h-full max-w-[1500px] min-h-0 grid-cols-1 gap-4 px-4 py-4 lg:grid-cols-[320px_minmax(0,1fr)] lg:px-6 lg:py-6">
         <ExplorerPanel workspace={workspace} onPickSheet={handlePickSheet} />
 
-        <section className="grid min-h-[calc(100vh-2rem)] grid-rows-[auto_auto_minmax(260px,1fr)_auto] gap-4 lg:min-h-[calc(100vh-3rem)]">
+        <section className="grid h-full min-h-0 grid-rows-[auto_auto_auto_minmax(0,1fr)] gap-4 overflow-hidden">
           <TitleBar
             folderPath={folderPath}
             onOpenFolder={handleOpenFolder}
@@ -236,9 +290,22 @@ export function App(): JSX.Element {
             />
           </Suspense>
 
-          <ResultsPanel result={result} resultMeta={resultMeta} error={error} isLoading={isRunningQuery} />
-
           <StatusBar status={status} />
+
+          <ResultsPanel
+            result={paginatedResult}
+            resultMeta={resultMeta}
+            error={error}
+            isLoading={isRunningQuery}
+            currentPage={currentPage}
+            pageSize={pageSize}
+            pageSizeOptions={PAGE_SIZE_OPTIONS}
+            hasNextPage={hasNextPage}
+            totalRows={totalRows}
+            onPreviousPage={handlePreviousPage}
+            onNextPage={handleNextPage}
+            onPageSizeChange={handlePageSizeChange}
+          />
         </section>
       </div>
     </div>

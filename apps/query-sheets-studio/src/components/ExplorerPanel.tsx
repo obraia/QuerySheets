@@ -7,7 +7,7 @@ type ExplorerPanelProps = {
 
 export function ExplorerPanel({ workspace, onPickSheet }: ExplorerPanelProps): JSX.Element {
   return (
-    <aside className="rounded-2xl border border-slate-200/70 bg-white/85 p-4 shadow-[0_16px_40px_-26px_rgba(15,23,42,0.45)] backdrop-blur-md lg:p-5">
+    <aside className="grid h-full min-h-0 grid-rows-[auto_auto_minmax(0,1fr)] rounded-2xl border border-slate-200/70 bg-white/85 p-4 shadow-[0_16px_40px_-26px_rgba(15,23,42,0.45)] backdrop-blur-md lg:p-5">
       <div className="mb-4 flex items-center justify-between">
         <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Explorer</p>
         <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600">
@@ -27,7 +27,7 @@ export function ExplorerPanel({ workspace, onPickSheet }: ExplorerPanelProps): J
         </div>
       )}
 
-      <div className="max-h-[65vh] space-y-3 overflow-auto pr-1">
+      <div className="min-h-0 space-y-3 overflow-auto pr-1">
         {workspace?.files.map((workbook) => (
           <section key={`${workbook.alias}:${workbook.file_name}`} className="rounded-xl border border-slate-200 bg-white">
             <header className="border-b border-slate-100 px-3 py-2">

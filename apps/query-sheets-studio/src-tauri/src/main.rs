@@ -304,6 +304,7 @@ fn execute_sql(
     sql: String,
     case_sensitive_strings: Option<bool>,
     max_rows: Option<usize>,
+    row_offset: Option<usize>,
     state: tauri::State<'_, Mutex<AppState>>,
 ) -> Result<QueryResultPayload, String> {
     let started = Instant::now();
@@ -323,7 +324,7 @@ fn execute_sql(
         case_sensitive_strings.unwrap_or(false),
     );
 
-    let limit = max_rows.unwrap_or(2000);
+    let offset = row_offset.unwrap_or(0);
     let (columns, rows, truncated) = {
         let execution = engine
             .execute_with_schema_and_resolver(&source, &sql, |table_ref| {
@@ -341,23 +342,29 @@ fn execute_sql(
             .map(|column| column.name)
             .collect::<Vec<_>>();
 
-        let mut rows = execution
-            .rows
-            .take(limit + 1)
-            .map(|row| {
-                row.values
-                    .into_iter()
-                    .map(|value| value.to_string())
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
+        let rows_iter = execution.rows.skip(offset).map(|row| {
+            row.values
+                .into_iter()
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>()
+        });
 
-        let truncated = rows.len() > limit;
-        if truncated {
-            let _ = rows.pop();
+        match max_rows {
+            Some(limit) => {
+                let mut rows = rows_iter.take(limit + 1).collect::<Vec<_>>();
+
+                let truncated = rows.len() > limit;
+                if truncated {
+                    let _ = rows.pop();
+                }
+
+                (columns, rows, truncated)
+            }
+            None => {
+                let rows = rows_iter.collect::<Vec<_>>();
+                (columns, rows, false)
+            }
         }
-
-        (columns, rows, truncated)
     };
 
     let payload = QueryResultPayload {

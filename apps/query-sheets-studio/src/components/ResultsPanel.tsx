@@ -5,11 +5,33 @@ type ResultsPanelProps = {
   resultMeta: string;
   error: string | null;
   isLoading: boolean;
+  currentPage: number;
+  pageSize: number;
+  pageSizeOptions: number[];
+  hasNextPage: boolean;
+  totalRows: number;
+  onPreviousPage: () => void;
+  onNextPage: () => void;
+  onPageSizeChange: (nextPageSize: number) => void;
 };
 
-export function ResultsPanel({ result, resultMeta, error, isLoading }: ResultsPanelProps): JSX.Element {
+export function ResultsPanel({
+  result,
+  resultMeta,
+  error,
+  isLoading,
+  currentPage,
+  pageSize,
+  pageSizeOptions,
+  hasNextPage,
+  totalRows,
+  onPreviousPage,
+  onNextPage,
+  onPageSizeChange
+}: ResultsPanelProps): JSX.Element {
   const columns = result?.columns ?? [];
   const rows = result?.rows ?? [];
+  const paginationDisabled = isLoading || !result;
 
   const displayColumnName = (column: string): string => {
     const normalized = column.trim();
@@ -17,17 +39,56 @@ export function ResultsPanel({ result, resultMeta, error, isLoading }: ResultsPa
   };
 
   return (
-    <section className="grid min-h-[260px] grid-rows-[auto_auto_minmax(0,1fr)] rounded-2xl border border-slate-200/70 bg-white/90 shadow-[0_16px_40px_-26px_rgba(15,23,42,0.45)] backdrop-blur-md">
-      <header className="flex items-center justify-between border-b border-slate-100 px-4 py-3 lg:px-5">
+    <section className="grid h-full min-h-0 grid-rows-[auto_auto_minmax(0,1fr)] rounded-2xl border border-slate-200/70 bg-white/90 shadow-[0_16px_40px_-26px_rgba(15,23,42,0.45)] backdrop-blur-md">
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3 lg:px-5">
         <p className="text-sm font-semibold text-slate-800">Results</p>
-        <div className="flex items-center gap-3">
+
+        <div className="flex flex-wrap items-center justify-end gap-3">
           {isLoading && (
             <p className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-500" aria-live="polite">
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-teal-500" />
               Executing...
             </p>
           )}
+
           <p className="text-xs text-slate-500">{resultMeta}</p>
+
+          <div className="inline-flex items-center gap-2 text-xs text-slate-600">
+            <span>Rows per page</span>
+            <select
+              className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 outline-none transition focus:border-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
+              value={pageSize}
+              onChange={(event) => onPageSizeChange(Number(event.target.value))}
+              disabled={paginationDisabled}
+            >
+              {pageSizeOptions.map((size) => (
+                <option key={size} value={size}>
+                  {size}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="inline-flex items-center gap-2 text-xs">
+            <span className="text-slate-600">Page {currentPage}</span>
+            <span className="text-slate-500">· {totalRows} total</span>
+            <button
+              type="button"
+              className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={onPreviousPage}
+              disabled={paginationDisabled || currentPage <= 1}
+            >
+              Previous
+            </button>
+            <button
+              type="button"
+              className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={onNextPage}
+              disabled={paginationDisabled || !hasNextPage}
+            >
+              Next
+            </button>
+          </div>
         </div>
       </header>
 
@@ -37,7 +98,7 @@ export function ResultsPanel({ result, resultMeta, error, isLoading }: ResultsPa
         </div>
       )}
 
-      <div className="overflow-auto px-4 pb-4 pt-3 lg:px-5 lg:pb-5">
+      <div className="min-h-0 overflow-y-auto overflow-x-auto px-4 pb-4 pt-3 lg:px-5 lg:pb-5">
         {!error && !result && !isLoading && (
           <div className="flex h-full min-h-[140px] items-center justify-center rounded-xl border border-dashed border-slate-300 bg-slate-50/70 px-4 text-sm text-slate-500">
             Run a query to see results.
@@ -96,6 +157,7 @@ export function ResultsPanel({ result, resultMeta, error, isLoading }: ResultsPa
           </table>
         )}
       </div>
+
     </section>
   );
 }

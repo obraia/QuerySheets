@@ -12,12 +12,14 @@ export async function refreshWorkspaceOverview(): Promise<WorkspaceOverview> {
 export async function executeSql(
   sql: string,
   caseSensitiveStrings: boolean,
-  maxRows: number
+  maxRows?: number,
+  rowOffset?: number
 ): Promise<QueryResult> {
   return invoke<QueryResult>("execute_sql", {
     sql,
     caseSensitiveStrings,
-    maxRows
+    maxRows,
+    rowOffset
   });
 }
 
