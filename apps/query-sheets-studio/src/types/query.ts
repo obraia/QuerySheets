@@ -3,6 +3,7 @@ export type WorkbookInfo = {
   file_name: string;
   file_path: string;
   sheets: string[];
+  sheet_columns: Record<string, string[]>;
 };
 
 export type WorkspaceOverview = {

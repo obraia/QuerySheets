@@ -151,6 +151,7 @@ export function App(): JSX.Element {
               onSqlChange={setSql}
               onRunQuery={handleRunQuery}
               isRunning={isBusy}
+              workspace={workspace}
             />
           </Suspense>
 

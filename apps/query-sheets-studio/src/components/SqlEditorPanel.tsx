@@ -1,39 +1,66 @@
+import { useMemo } from "react";
 import CodeMirror from "@uiw/react-codemirror";
 import { sql as sqlLanguage } from "@codemirror/lang-sql";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { keymap } from "@codemirror/view";
+import type { WorkspaceOverview } from "../types/query";
 
 type SqlEditorPanelProps = {
   sql: string;
   onSqlChange: (value: string) => void;
   onRunQuery: () => Promise<void>;
   isRunning: boolean;
+  workspace: WorkspaceOverview | null;
 };
 
 export function SqlEditorPanel({
   sql,
   onSqlChange,
   onRunQuery,
-  isRunning
+  isRunning,
+  workspace
 }: SqlEditorPanelProps): JSX.Element {
-  const editorExtensions = [
-    sqlLanguage(),
-    keymap.of([
-      {
-        key: "Mod-Enter",
-        run: () => {
-          void onRunQuery();
-          return true;
-        }
+  const sqlSchema = useMemo(() => {
+    const schema: Record<string, Record<string, readonly string[]>> = {};
+
+    for (const workbook of workspace?.files ?? []) {
+      const sheetMap: Record<string, readonly string[]> = {};
+      for (const sheet of workbook.sheets) {
+        const columns = (workbook.sheet_columns?.[sheet] ?? []).filter((name) => name.trim().length > 0);
+        sheetMap[sheet] = columns;
       }
-    ])
-  ];
+      schema[workbook.alias] = sheetMap;
+    }
+
+    return schema;
+  }, [workspace]);
+
+  const editorExtensions = useMemo(
+    () => [
+      sqlLanguage({
+        schema: sqlSchema,
+        upperCaseKeywords: true
+      }),
+      keymap.of([
+        {
+          key: "Mod-Enter",
+          run: () => {
+            void onRunQuery();
+            return true;
+          }
+        }
+      ])
+    ],
+    [onRunQuery, sqlSchema]
+  );
 
   return (
     <section className="rounded-2xl border border-slate-200/70 bg-white/90 shadow-[0_16px_40px_-26px_rgba(15,23,42,0.45)] backdrop-blur-md">
       <header className="flex items-center justify-between border-b border-slate-100 px-4 py-3 lg:px-5">
         <p className="text-sm font-semibold text-slate-800">query.sql</p>
-        <p className="text-xs text-slate-500">{isRunning ? "Executing" : "Ctrl/Cmd + Enter to run"}</p>
+          <p className="text-xs text-slate-500">
+            {isRunning ? "Executing" : "Ctrl/Cmd + Enter to run · Ctrl/Cmd + Space autocomplete"}
+          </p>
       </header>
 
       <CodeMirror

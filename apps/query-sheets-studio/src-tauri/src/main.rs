@@ -19,6 +19,7 @@ struct WorkbookInfo {
     file_name: String,
     file_path: String,
     sheets: Vec<String>,
+    sheet_columns: HashMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -100,6 +101,12 @@ impl FolderCatalog {
             }
 
             let sheets = workbook_sheets(&file_path)?;
+            let mut sheet_columns = HashMap::new();
+            for sheet in &sheets {
+                let columns = worksheet_columns(&file_path, sheet)?;
+                sheet_columns.insert(sheet.clone(), columns);
+            }
+
             let file_name = file_path
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -111,6 +118,7 @@ impl FolderCatalog {
                 file_name,
                 file_path: file_path.display().to_string(),
                 sheets,
+                sheet_columns,
             });
 
             files_by_alias.insert(alias_key, WorkbookEntry { alias, file_path });
@@ -363,6 +371,27 @@ fn workbook_sheets(path: &Path) -> Result<Vec<String>, String> {
     }
 
     Ok(names)
+}
+
+fn worksheet_columns(path: &Path, sheet_name: &str) -> Result<Vec<String>, String> {
+    let file_path_str = path
+        .to_str()
+        .ok_or_else(|| format!("invalid file path '{}'", path.display()))?;
+
+    let source = create_excel_source(file_path_str, Some(sheet_name)).map_err(|err| {
+        format!(
+            "failed to read schema for worksheet '{}' in '{}': {err}",
+            sheet_name,
+            path.display()
+        )
+    })?;
+
+    Ok(source
+        .schema()
+        .columns
+        .iter()
+        .map(|column| column.name.clone())
+        .collect::<Vec<_>>())
 }
 
 fn file_alias(path: &Path) -> Result<String, String> {
