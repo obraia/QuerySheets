@@ -1,5 +1,6 @@
-import { lazy, Suspense, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ExplorerPanel } from "./components/ExplorerPanel.js";
 import { ResultsPanel } from "./components/ResultsPanel.js";
 import { StatusBar } from "./components/StatusBar.js";
@@ -21,6 +22,35 @@ const defaultSql = [
 
 const MIN_QUERY_LOADING_MS = 280;
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 250, 500];
+const SPREADSHEET_EXTENSIONS = [".xlsx", ".xlsm", ".xls", ".xlsb", ".ods"];
+
+function isSpreadsheetFilePath(path: string): boolean {
+  const lowerPath = path.toLowerCase();
+  return SPREADSHEET_EXTENSIONS.some((extension) => lowerPath.endsWith(extension));
+}
+
+function parentDirectory(path: string): string | null {
+  const trimmed = path.replace(/[\\/]+$/, "");
+  const separatorIndex = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+
+  if (separatorIndex < 0) {
+    return null;
+  }
+
+  if (separatorIndex === 0) {
+    return trimmed.slice(0, 1);
+  }
+
+  return trimmed.slice(0, separatorIndex);
+}
+
+function resolveDroppedFolderPath(path: string): string | null {
+  if (isSpreadsheetFilePath(path)) {
+    return parentDirectory(path);
+  }
+
+  return path;
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -54,6 +84,7 @@ export function App(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [isRunningQuery, setIsRunningQuery] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [isDragOverWindow, setIsDragOverWindow] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(100);
   const [status, setStatus] = useState<StatusMessage>({
@@ -90,18 +121,13 @@ export function App(): JSX.Element {
     };
   }, [currentPage, pageSize, result]);
 
-  async function handleOpenFolder(): Promise<void> {
-    const folder = await open({ directory: true, multiple: false });
-
-    if (!folder || typeof folder !== "string") {
-      return;
-    }
-
+  const openWorkspaceFolder = useCallback(async (folderPath: string): Promise<void> => {
     try {
-      const overview = await setWorkspaceFolder(folder);
+      const overview = await setWorkspaceFolder(folderPath);
       setWorkspace(overview);
       setError(null);
       setResult(null);
+      setCurrentPage(1);
       setResultMeta("No query executed");
 
       if (overview.files.length > 0) {
@@ -114,6 +140,72 @@ export function App(): JSX.Element {
     } catch (err) {
       setStatus({ message: String(err), isError: true });
     }
+  }, []);
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let disposed = false;
+
+    void getCurrentWindow()
+      .onDragDropEvent((event) => {
+        const dragType = event.payload.type;
+
+        if (dragType === "enter" || dragType === "over") {
+          setIsDragOverWindow(true);
+          return;
+        }
+
+        if (dragType === "leave") {
+          setIsDragOverWindow(false);
+          return;
+        }
+
+        if (dragType === "drop") {
+          setIsDragOverWindow(false);
+          const droppedPath = event.payload.paths[0];
+
+          if (!droppedPath) {
+            setStatus({ message: "No folder found in drop", isError: true });
+            return;
+          }
+
+          const resolvedFolderPath = resolveDroppedFolderPath(droppedPath);
+          if (!resolvedFolderPath) {
+            setStatus({ message: "Could not resolve folder from dropped item", isError: true });
+            return;
+          }
+
+          void openWorkspaceFolder(resolvedFolderPath);
+        }
+      })
+      .then((fn) => {
+        if (disposed) {
+          fn();
+          return;
+        }
+
+        unlisten = fn;
+      })
+      .catch((err) => {
+        setStatus({ message: `Drag-and-drop unavailable: ${String(err)}`, isError: true });
+      });
+
+    return () => {
+      disposed = true;
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, [openWorkspaceFolder]);
+
+  async function handleOpenFolder(): Promise<void> {
+    const folder = await open({ directory: true, multiple: false });
+
+    if (!folder || typeof folder !== "string") {
+      return;
+    }
+
+    await openWorkspaceFolder(folder);
   }
 
   async function handleRefreshWorkspace(): Promise<void> {
@@ -254,7 +346,7 @@ export function App(): JSX.Element {
   }
 
   return (
-    <div className="h-screen overflow-hidden bg-[radial-gradient(circle_at_15%_20%,#eff6ff_0%,#f8fafc_35%,#fff7ed_100%)] text-slate-900">
+    <div className="relative h-screen overflow-hidden bg-[radial-gradient(circle_at_15%_20%,#eff6ff_0%,#f8fafc_35%,#fff7ed_100%)] text-slate-900">
       <div className="mx-auto grid h-full max-w-[1500px] min-h-0 grid-cols-1 gap-4 px-4 py-4 lg:grid-cols-[320px_minmax(0,1fr)] lg:px-6 lg:py-6">
         <ExplorerPanel workspace={workspace} onPickSheet={handlePickSheet} />
 
@@ -308,6 +400,14 @@ export function App(): JSX.Element {
           />
         </section>
       </div>
+
+      {isDragOverWindow && (
+        <div className="pointer-events-none absolute inset-4 z-50 flex items-center justify-center rounded-3xl border-2 border-dashed border-teal-400/80 bg-white/65 backdrop-blur-sm">
+          <div className="rounded-xl border border-teal-200 bg-white px-5 py-3 text-sm font-semibold text-teal-700 shadow-sm">
+            Drop folder to open workspace
+          </div>
+        </div>
+      )}
     </div>
   );
 }
