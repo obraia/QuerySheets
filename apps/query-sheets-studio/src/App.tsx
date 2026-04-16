@@ -1,8 +1,7 @@
-import { useMemo, useState } from "react";
+import { lazy, Suspense, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { ExplorerPanel } from "./components/ExplorerPanel";
 import { ResultsPanel } from "./components/ResultsPanel";
-import { SqlEditorPanel } from "./components/SqlEditorPanel";
 import { StatusBar } from "./components/StatusBar";
 import { TitleBar } from "./components/TitleBar";
 import {
@@ -18,6 +17,11 @@ const defaultSql = [
   "LEFT JOIN exemplo.Orders o ON c.CustomerId = o.CustomerId",
   "LIMIT 100"
 ].join("\n");
+
+const SqlEditorPanel = lazy(async () => {
+  const module = await import("./components/SqlEditorPanel");
+  return { default: module.SqlEditorPanel };
+});
 
 export function App(): JSX.Element {
   const [workspace, setWorkspace] = useState<WorkspaceOverview | null>(null);
@@ -131,12 +135,24 @@ export function App(): JSX.Element {
             isBusy={isBusy}
           />
 
-          <SqlEditorPanel
-            sql={sql}
-            onSqlChange={setSql}
-            onRunQuery={handleRunQuery}
-            isRunning={isBusy}
-          />
+          <Suspense
+            fallback={
+              <section className="rounded-2xl border border-slate-200/70 bg-white/90 shadow-[0_16px_40px_-26px_rgba(15,23,42,0.45)] backdrop-blur-md">
+                <header className="flex items-center justify-between border-b border-slate-100 px-4 py-3 lg:px-5">
+                  <p className="text-sm font-semibold text-slate-800">query.sql</p>
+                  <p className="text-xs text-slate-500">Loading editor...</p>
+                </header>
+                <div className="min-h-[210px] w-full bg-slate-950/95" />
+              </section>
+            }
+          >
+            <SqlEditorPanel
+              sql={sql}
+              onSqlChange={setSql}
+              onRunQuery={handleRunQuery}
+              isRunning={isBusy}
+            />
+          </Suspense>
 
           <ResultsPanel result={result} resultMeta={resultMeta} error={error} />
 

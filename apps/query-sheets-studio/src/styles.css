@@ -25,3 +25,17 @@ code,
 table {
   font-family: "IBM Plex Mono", "Menlo", "Consolas", monospace;
 }
+
+.sql-editor {
+  border-radius: 0 0 1rem 1rem;
+  overflow: hidden;
+}
+
+.sql-editor .cm-editor {
+  font-family: "IBM Plex Mono", "Menlo", "Consolas", monospace;
+  font-size: 13px;
+}
+
+.sql-editor .cm-scroller {
+  line-height: 1.55;
+}
