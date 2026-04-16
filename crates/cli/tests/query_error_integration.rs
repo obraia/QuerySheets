@@ -1,7 +1,7 @@
 mod common;
 
 use assert_cmd::Command;
-use common::create_customers_fixture;
+use common::{create_customers_fixture, create_customers_fixture_with_rows};
 use std::error::Error;
 use tempfile::tempdir;
 
@@ -212,6 +212,30 @@ fn query_returns_error_for_order_by_position_out_of_range() -> Result<(), Box<dy
     let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
     assert!(stderr.contains("unsupported ORDER BY expression"));
     assert!(stderr.contains("out of range"));
+
+    Ok(())
+}
+
+#[test]
+fn session_returns_error_for_folder_query_without_file_alias() -> Result<(), Box<dyn Error>> {
+    let tmp = tempdir()?;
+    let fixture = tmp.path().join("north.xlsx");
+    create_customers_fixture_with_rows(
+        &fixture,
+        &[["N-001", "North Customer", "Enterprise", "Active"]],
+    )?;
+
+    let mut command = Command::cargo_bin("query-sheets")?;
+    let assert = command
+        .arg("session")
+        .arg("--path")
+        .arg(tmp.path())
+        .write_stdin("SELECT CustomerId FROM Customers;\n.exit\n")
+        .assert()
+        .success();
+
+    let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+    assert!(stderr.contains("in folder mode use FROM <arquivo>.<worksheet>"));
 
     Ok(())
 }

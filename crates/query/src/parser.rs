@@ -18,18 +18,19 @@ pub(crate) struct ParsedSelect {
     pub pagination: Pagination,
 }
 
-pub fn extract_table_name(sql: &str) -> Result<Option<String>, QueryError> {
-    let parsed = parse_select(sql)?;
-    let Some(table) = parsed.select.from.first() else {
-        return Ok(None);
-    };
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableReference {
+    pub schema: Option<String>,
+    pub table: String,
+}
 
-    match &table.relation {
-        TableFactor::Table { name, .. } => {
-            Ok(name.0.last().map(|identifier| identifier.value.clone()))
-        }
-        _ => Err(QueryError::UnsupportedQuery),
-    }
+pub fn extract_table_reference(sql: &str) -> Result<Option<TableReference>, QueryError> {
+    let parsed = parse_select(sql)?;
+    table_reference_from_select(&parsed.select)
+}
+
+pub fn extract_table_name(sql: &str) -> Result<Option<String>, QueryError> {
+    Ok(extract_table_reference(sql)?.map(|table_ref| table_ref.table))
 }
 
 pub(crate) fn parse_select(sql: &str) -> Result<ParsedSelect, QueryError> {
@@ -61,6 +62,32 @@ fn select_from_query(query: &Query) -> Result<ParsedSelect, QueryError> {
         order_by,
         pagination,
     })
+}
+
+fn table_reference_from_select(select: &Select) -> Result<Option<TableReference>, QueryError> {
+    let Some(table) = select.from.first() else {
+        return Ok(None);
+    };
+
+    match &table.relation {
+        TableFactor::Table { name, .. } => {
+            let Some(table_ident) = name.0.last() else {
+                return Ok(None);
+            };
+
+            let schema = if name.0.len() >= 2 {
+                Some(name.0[name.0.len() - 2].value.clone())
+            } else {
+                None
+            };
+
+            Ok(Some(TableReference {
+                schema,
+                table: table_ident.value.clone(),
+            }))
+        }
+        _ => Err(QueryError::UnsupportedQuery),
+    }
 }
 
 fn parse_order_by(query: &Query) -> Result<Vec<OrderByExpr>, QueryError> {

@@ -6,6 +6,19 @@ use std::error::Error;
 use std::path::Path;
 
 pub fn create_customers_fixture(path: &Path) -> Result<(), Box<dyn Error>> {
+    let rows = [
+        ["C-001", "Alice Johnson", "Enterprise", "Active"],
+        ["C-002", "Bob Smith", "SMB", "Active"],
+        ["C-003", "Carla Davis", "Enterprise", "Churned"],
+    ];
+
+    create_customers_fixture_with_rows(path, &rows)
+}
+
+pub fn create_customers_fixture_with_rows(
+    path: &Path,
+    rows: &[[&str; 4]],
+) -> Result<(), Box<dyn Error>> {
     let mut workbook = Workbook::new();
     let worksheet = workbook.add_worksheet();
     worksheet.set_name("Customers")?;
@@ -14,12 +27,6 @@ pub fn create_customers_fixture(path: &Path) -> Result<(), Box<dyn Error>> {
     worksheet.write_string(0, 1, "CustomerName")?;
     worksheet.write_string(0, 2, "Segment")?;
     worksheet.write_string(0, 3, "AccountStatus")?;
-
-    let rows = [
-        ["C-001", "Alice Johnson", "Enterprise", "Active"],
-        ["C-002", "Bob Smith", "SMB", "Active"],
-        ["C-003", "Carla Davis", "Enterprise", "Churned"],
-    ];
 
     for (offset, row) in rows.iter().enumerate() {
         let row_idx = (offset + 1) as u32;
@@ -171,6 +178,30 @@ pub fn run_cli_query_with_case_sensitive_strings(
     let assert = command.assert().success();
     let stdout = String::from_utf8(assert.get_output().stdout.clone())?;
     Ok(stdout)
+}
+
+pub fn run_cli_session(
+    path: &Path,
+    input: &str,
+    header: bool,
+    case_sensitive_strings: bool,
+) -> Result<(String, String), Box<dyn Error>> {
+    let mut command = Command::cargo_bin("query-sheets")?;
+    command.arg("session").arg("--path").arg(path);
+
+    if header {
+        command.arg("--header");
+    }
+
+    if case_sensitive_strings {
+        command.arg("--case-sensitive-strings");
+    }
+
+    let assert = command.write_stdin(input).assert().success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone())?;
+    let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
+
+    Ok((stdout, stderr))
 }
 
 pub fn run_cli_export(

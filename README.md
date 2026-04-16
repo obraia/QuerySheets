@@ -23,7 +23,7 @@ Implemented today:
 - Aggregations with `GROUP BY` using `COUNT(*)`, `COUNT(column)`, `SUM(column)`, `AVG(column)`, `STDDEV(column)`, `MIN(column)`, and `MAX(column)`
 - Ordering with `ORDER BY` (`ASC`/`DESC`, optional `NULLS FIRST`/`NULLS LAST`)
 - Pagination with `LIMIT` and `OFFSET`
-- CLI with `query` command, `--sheet`, `--header`, and `--case-sensitive-strings`
+- CLI with `query` and `session` commands, plus `--sheet`, `--header`, and `--case-sensitive-strings`
 - CSV/JSON/JSONL export inferred from `--output` extension (`.csv`, `.json`, `.jsonl`)
 - Integration tests with generated `.xlsx` fixtures
 
@@ -96,6 +96,12 @@ Query command help:
 
 ```bash
 cargo run -p query-sheets-cli -- query --help
+```
+
+Session command help:
+
+```bash
+cargo run -p query-sheets-cli -- session --help
 ```
 
 Basic query example:
@@ -180,6 +186,25 @@ cargo run -p query-sheets-cli -- query \
   --case-sensitive-strings
 ```
 
+Session mode using a single spreadsheet file:
+
+```bash
+cargo run -p query-sheets-cli -- session --path ./planilha.xlsx --header
+```
+
+Session mode using a folder with spreadsheets:
+
+```bash
+cargo run -p query-sheets-cli -- session --path ./datasets
+```
+
+In session folder mode:
+- Use `FROM <arquivo>.<worksheet>` where `<arquivo>` is the spreadsheet file name without extension.
+- Example: `SELECT CustomerId FROM sales.Customers` reads worksheet `Customers` from `sales.xlsx`.
+- Use `.cache` to inspect how many tables are already cached in memory for incremental queries.
+- Use `.clear` to clear the session console output.
+- In interactive terminals, use arrow keys: `↑/↓` navigates command/query history and `←/→` moves the cursor.
+
 ## SQL Support (Current)
 
 Supported:
@@ -221,6 +246,10 @@ Not supported yet:
 - joins
 - subqueries
 - additional aggregate functions (`VARIANCE`, `MEDIAN`, etc.)
+
+Session mode notes:
+- In file mode (`--path` points to one file), `FROM <worksheet>` is enough.
+- In folder mode (`--path` points to a directory), `FROM <arquivo>.<worksheet>` is required to resolve the source file.
 
 ## Testing
 
@@ -269,6 +298,12 @@ Phase 4:
 ## Documentation Changelog
 
 Use this section to keep documentation changes visible over time.
+
+- 2026-04-15
+  - Added incremental `session` CLI mode to execute multiple queries without restarting the process.
+  - Added in-memory table caching per `<arquivo>::<worksheet>` in session mode.
+  - Added folder session resolution where `dbo`/schema is the file name and table is the worksheet name.
+  - Added CLI integration tests for session success and error flows.
 
 - 2026-04-15
   - Added `STDDEV(column)` aggregation support (population standard deviation, ignoring `NULL` values).

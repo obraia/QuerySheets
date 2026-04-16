@@ -1,8 +1,9 @@
 mod common;
 
 use common::{
-    create_activity_time_fixture, create_customers_fixture, create_sales_fixture, run_cli_query,
-    run_cli_query_with_case_sensitive_strings,
+    create_activity_time_fixture, create_customers_fixture, create_customers_fixture_with_rows,
+    create_sales_fixture, run_cli_query, run_cli_query_with_case_sensitive_strings,
+    run_cli_session,
 };
 use std::error::Error;
 use tempfile::tempdir;
@@ -275,6 +276,82 @@ fn query_outputs_rows_with_case_sensitive_strings_flag() -> Result<(), Box<dyn E
 
     assert_eq!(lines.len(), 1);
     assert_eq!(lines[0], "CustomerId\tSegment");
+
+    Ok(())
+}
+
+#[test]
+fn session_executes_incremental_queries_against_single_file() -> Result<(), Box<dyn Error>> {
+    let tmp = tempdir()?;
+    let fixture = tmp.path().join("customers.xlsx");
+    create_customers_fixture(&fixture)?;
+
+    let input = "SELECT CustomerId FROM Customers WHERE Segment = 'Enterprise';\nSELECT CustomerName FROM Customers LIMIT 1;\n.exit\n";
+    let (stdout, stderr) = run_cli_session(&fixture, input, true, false)?;
+
+    assert!(stderr.trim().is_empty());
+    assert!(stdout.contains("query-sheets session mode"));
+    assert!(stdout.contains("CustomerId"));
+    assert!(stdout.contains("C-001"));
+    assert!(stdout.contains("C-003"));
+    assert!(stdout.contains("CustomerName"));
+    assert!(stdout.contains("Alice Johnson"));
+
+    Ok(())
+}
+
+#[test]
+fn session_resolves_folder_queries_as_file_alias_and_worksheet() -> Result<(), Box<dyn Error>> {
+    let tmp = tempdir()?;
+    let north = tmp.path().join("north.xlsx");
+    let south = tmp.path().join("south.xlsx");
+
+    create_customers_fixture_with_rows(
+        &north,
+        &[["N-001", "North Customer", "Enterprise", "Active"]],
+    )?;
+    create_customers_fixture_with_rows(
+        &south,
+        &[["S-001", "South Customer", "SMB", "Inactive"]],
+    )?;
+
+    let input = "SELECT CustomerId, CustomerName FROM north.Customers WHERE AccountStatus = 'Active';\nSELECT CustomerId FROM south.Customers WHERE AccountStatus = 'Inactive';\n.exit\n";
+    let (stdout, stderr) = run_cli_session(tmp.path(), input, false, false)?;
+
+    assert!(stderr.trim().is_empty());
+    assert!(stdout.contains("N-001\tNorth Customer"));
+    assert!(stdout.contains("S-001"));
+
+    Ok(())
+}
+
+#[test]
+fn session_cache_command_reflects_loaded_tables() -> Result<(), Box<dyn Error>> {
+    let tmp = tempdir()?;
+    let fixture = tmp.path().join("customers.xlsx");
+    create_customers_fixture(&fixture)?;
+
+    let input = ".cache\nSELECT CustomerId FROM Customers LIMIT 1;\n.cache\n.exit\n";
+    let (stdout, stderr) = run_cli_session(&fixture, input, false, false)?;
+
+    assert!(stderr.trim().is_empty());
+    assert!(stdout.contains("cached tables: 0"));
+    assert!(stdout.contains("cached tables: 1"));
+
+    Ok(())
+}
+
+#[test]
+fn session_clear_command_emits_console_clear_sequence() -> Result<(), Box<dyn Error>> {
+    let tmp = tempdir()?;
+    let fixture = tmp.path().join("customers.xlsx");
+    create_customers_fixture(&fixture)?;
+
+    let input = ".clear\n.exit\n";
+    let (stdout, stderr) = run_cli_session(&fixture, input, false, false)?;
+
+    assert!(stderr.trim().is_empty());
+    assert!(stdout.contains("\u{1b}[2J\u{1b}[H"));
 
     Ok(())
 }

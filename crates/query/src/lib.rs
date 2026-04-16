@@ -9,7 +9,7 @@ mod projection;
 mod text;
 
 pub use errors::QueryError;
-pub use parser::extract_table_name;
+pub use parser::{TableReference, extract_table_name, extract_table_reference};
 
 use aggregation::{
     build_group_by_aggregation_plan, execute_group_by_aggregation, extract_group_by_column_indexes,
