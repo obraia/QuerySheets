@@ -57,12 +57,32 @@ Boundaries:
 ## Repository Layout
 
 ```text
+/apps
+  /query-sheets-studio
 /crates
   /core
   /adapters
   /query
   /cli
 ```
+
+## Optional Desktop App
+
+QuerySheets also includes an optional desktop UI built with Tauri:
+
+- Path: `apps/query-sheets-studio`
+- Purpose: open a folder of spreadsheets and run SQL queries with a code-editor-like experience
+- Query style in folder mode: `FROM <file>.<worksheet>` (example: `example.sheet1`)
+
+Run locally:
+
+```bash
+cd apps/query-sheets-studio
+npm install
+npm run tauri:dev
+```
+
+See app-specific docs in `apps/query-sheets-studio/README.md`.
 
 ## Requirements
 

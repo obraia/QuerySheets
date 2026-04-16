@@ -1,0 +1,9 @@
+{
+  "identifier": "default",
+  "description": "Default capability set for QuerySheets Studio",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:default"
+  ]
+}
