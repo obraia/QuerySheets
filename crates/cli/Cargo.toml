@@ -3,6 +3,9 @@ name = "query-sheets-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository = "https://github.com/obraia/QuerySheets"
+homepage = "https://github.com/obraia/QuerySheets"
+description = "CLI for querying Excel spreadsheets with SQL"
 
 [features]
 default = []

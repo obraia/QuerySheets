@@ -1,8 +1,8 @@
 # QuerySheets
 
-[![CI](https://img.shields.io/github/actions/workflow/status/obraia/QeurySheets/ci.yml?branch=main&label=CI)](https://github.com/obraia/QeurySheets/actions)
-[![Release](https://img.shields.io/github/v/release/obraia/QeurySheets?label=release)](https://github.com/obraia/QeurySheets/releases)
-[![License](https://img.shields.io/github/license/obraia/QeurySheets)](https://github.com/obraia/QeurySheets/blob/main/LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/obraia/QuerySheets/ci.yml?branch=main&label=CI)](https://github.com/obraia/QuerySheets/actions)
+[![Release](https://img.shields.io/github/v/release/obraia/QuerySheets?label=release)](https://github.com/obraia/QuerySheets/releases)
+[![License](https://img.shields.io/github/license/obraia/QuerySheets)](https://github.com/obraia/QuerySheets/blob/main/LICENSE)
 
 SQL query engine for spreadsheet files, built in Rust.
 
@@ -124,8 +124,8 @@ winget install Microsoft.VisualStudio.2022.BuildTools
 4. Clone and install dependencies:
 
 ```powershell
-git clone https://github.com/obraia/QeurySheets.git
-cd QeurySheets
+git clone https://github.com/obraia/QuerySheets.git
+cd QuerySheets
 cd apps/query-sheets-studio
 npm install
 cd ../..
@@ -148,8 +148,8 @@ brew install node
 3. Clone and install dependencies:
 
 ```bash
-git clone https://github.com/obraia/QeurySheets.git
-cd QeurySheets/apps/query-sheets-studio
+git clone https://github.com/obraia/QuerySheets.git
+cd QuerySheets/apps/query-sheets-studio
 npm install
 cd ../..
 ```
@@ -178,8 +178,8 @@ sudo apt install -y nodejs npm
 4. Clone and install dependencies:
 
 ```bash
-git clone https://github.com/obraia/QeurySheets.git
-cd QeurySheets/apps/query-sheets-studio
+git clone https://github.com/obraia/QuerySheets.git
+cd QuerySheets/apps/query-sheets-studio
 npm install
 cd ../..
 ```
