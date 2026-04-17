@@ -184,7 +184,7 @@ fn query_returns_error_for_order_by_with_incomparable_values() -> Result<(), Box
         .arg("--file")
         .arg(&fixture)
         .arg("--sql")
-        .arg("SELECT Tempo FROM Times ORDER BY Tempo")
+        .arg("SELECT Time FROM Times ORDER BY Time")
         .assert()
         .failure();
 

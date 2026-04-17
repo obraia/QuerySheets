@@ -15,7 +15,7 @@ fn executes_select_where_projection() {
 
     let engine = SqlLikeQueryEngine;
     let result = engine
-        .execute(&source, "SELECT name FROM planilha WHERE age > 15")
+        .execute(&source, "SELECT name FROM spreadsheet WHERE age > 15")
         .expect("query should execute")
         .collect::<Vec<_>>();
 
@@ -38,7 +38,7 @@ fn executes_projection_with_alias_and_expression() {
     let result = engine
         .execute(
             &source,
-            "SELECT name AS pessoa, age + 5 AS idade_ajustada, 1 AS constante FROM planilha WHERE name = 'bia'",
+            "SELECT name AS person, age + 5 AS adjusted_age, 1 AS constante FROM spreadsheet WHERE name = 'bia'",
         )
         .expect("query should execute")
         .collect::<Vec<_>>();
@@ -61,7 +61,7 @@ fn returns_projected_schema_with_aliases() {
     let execution = engine
         .execute_with_schema(
             &source,
-            "SELECT name AS pessoa, age + 1 AS idade_ajustada, age * 2 FROM planilha",
+            "SELECT name AS person, age + 1 AS adjusted_age, age * 2 FROM spreadsheet",
         )
         .expect("query should execute");
 
@@ -73,7 +73,7 @@ fn returns_projected_schema_with_aliases() {
         .collect::<Vec<_>>();
     let rows = execution.rows.collect::<Vec<_>>();
 
-    assert_eq!(header, vec!["pessoa", "idade_ajustada", "age * 2"]);
+    assert_eq!(header, vec!["person", "adjusted_age", "age * 2"]);
     assert_eq!(rows.len(), 1);
     assert_eq!(
         rows[0].values,
@@ -94,7 +94,7 @@ fn executes_where_string_comparison_case_insensitive() {
 
     let engine = SqlLikeQueryEngine;
     let result = engine
-        .execute(&source, "SELECT name FROM planilha WHERE name = 'BIA'")
+        .execute(&source, "SELECT name FROM spreadsheet WHERE name = 'BIA'")
         .expect("query should execute")
         .collect::<Vec<_>>();
 
@@ -115,7 +115,7 @@ fn executes_where_string_comparison_case_sensitive_when_enabled() {
 
     let engine = SqlLikeQueryEngine.with_case_sensitive_strings(true);
     let result = engine
-        .execute(&source, "SELECT name FROM planilha WHERE name = 'BIA'")
+        .execute(&source, "SELECT name FROM spreadsheet WHERE name = 'BIA'")
         .expect("query should execute")
         .collect::<Vec<_>>();
 
@@ -126,7 +126,7 @@ fn executes_where_string_comparison_case_sensitive_when_enabled() {
 #[test]
 fn executes_where_with_float_and_null_without_error() {
     let source = MockSource {
-        schema: Schema::new(vec![Column::new("tempo")]),
+        schema: Schema::new(vec![Column::new("time")]),
         rows: vec![
             Row::new(vec![Value::Float(12.0)]),
             Row::new(vec![Value::Null]),
@@ -136,7 +136,7 @@ fn executes_where_with_float_and_null_without_error() {
 
     let engine = SqlLikeQueryEngine;
     let result = engine
-        .execute(&source, "SELECT tempo FROM planilha WHERE tempo >= 10")
+        .execute(&source, "SELECT time FROM spreadsheet WHERE time >= 10")
         .expect("query should execute")
         .collect::<Vec<_>>();
 
@@ -147,7 +147,7 @@ fn executes_where_with_float_and_null_without_error() {
 #[test]
 fn executes_where_null_literal_comparisons_as_non_matching() {
     let source = MockSource {
-        schema: Schema::new(vec![Column::new("tempo")]),
+        schema: Schema::new(vec![Column::new("time")]),
         rows: vec![
             Row::new(vec![Value::Float(12.0)]),
             Row::new(vec![Value::Null]),
@@ -157,13 +157,13 @@ fn executes_where_null_literal_comparisons_as_non_matching() {
     let engine = SqlLikeQueryEngine;
 
     let eq_result = engine
-        .execute(&source, "SELECT tempo FROM planilha WHERE tempo = NULL")
+        .execute(&source, "SELECT time FROM spreadsheet WHERE time = NULL")
         .expect("query should execute")
         .collect::<Vec<_>>();
     assert!(eq_result.is_empty());
 
     let neq_result = engine
-        .execute(&source, "SELECT tempo FROM planilha WHERE tempo != NULL")
+        .execute(&source, "SELECT time FROM spreadsheet WHERE time != NULL")
         .expect("query should execute")
         .collect::<Vec<_>>();
     assert!(neq_result.is_empty());
@@ -182,7 +182,7 @@ fn executes_where_in_list_numeric() {
 
     let engine = SqlLikeQueryEngine;
     let result = engine
-        .execute(&source, "SELECT name FROM planilha WHERE age IN (10, 30)")
+        .execute(&source, "SELECT name FROM spreadsheet WHERE age IN (10, 30)")
         .expect("query should execute")
         .collect::<Vec<_>>();
 
@@ -204,7 +204,7 @@ fn executes_where_not_in_list_numeric() {
 
     let engine = SqlLikeQueryEngine;
     let result = engine
-        .execute(&source, "SELECT name FROM planilha WHERE age NOT IN (10, 30)")
+        .execute(&source, "SELECT name FROM spreadsheet WHERE age NOT IN (10, 30)")
         .expect("query should execute")
         .collect::<Vec<_>>();
 
@@ -225,7 +225,7 @@ fn executes_where_in_list_string_case_insensitive() {
 
     let engine = SqlLikeQueryEngine;
     let result = engine
-        .execute(&source, "SELECT name FROM planilha WHERE name IN ('BIA', 'CAIO')")
+        .execute(&source, "SELECT name FROM spreadsheet WHERE name IN ('BIA', 'CAIO')")
         .expect("query should execute")
         .collect::<Vec<_>>();
 
@@ -246,7 +246,7 @@ fn executes_where_not_in_with_null_list_as_non_matching() {
 
     let engine = SqlLikeQueryEngine;
     let result = engine
-        .execute(&source, "SELECT name FROM planilha WHERE age NOT IN (10, NULL)")
+        .execute(&source, "SELECT name FROM spreadsheet WHERE age NOT IN (10, NULL)")
         .expect("query should execute")
         .collect::<Vec<_>>();
 
@@ -268,7 +268,7 @@ fn executes_where_in_subquery_numeric() {
     let result = engine
         .execute(
             &source,
-            "SELECT name FROM planilha WHERE age IN (SELECT age FROM planilha WHERE age >= 20)",
+            "SELECT name FROM spreadsheet WHERE age IN (SELECT age FROM spreadsheet WHERE age >= 20)",
         )
         .expect("query should execute")
         .collect::<Vec<_>>();
@@ -293,7 +293,7 @@ fn executes_where_not_in_subquery_numeric() {
     let result = engine
         .execute(
             &source,
-            "SELECT name FROM planilha WHERE age NOT IN (SELECT age FROM planilha WHERE age >= 20)",
+            "SELECT name FROM spreadsheet WHERE age NOT IN (SELECT age FROM spreadsheet WHERE age >= 20)",
         )
         .expect("query should execute")
         .collect::<Vec<_>>();
@@ -315,7 +315,7 @@ fn returns_error_when_in_subquery_returns_multiple_columns() {
     let engine = SqlLikeQueryEngine;
     let result = engine.execute(
         &source,
-        "SELECT name FROM planilha WHERE age IN (SELECT age, name FROM planilha)",
+        "SELECT name FROM spreadsheet WHERE age IN (SELECT age, name FROM spreadsheet)",
     );
 
     match result {
@@ -339,7 +339,7 @@ fn executes_scalar_subquery_in_projection() {
     let result = engine
         .execute(
             &source,
-            "SELECT name, (SELECT age FROM planilha WHERE name = 'bia') AS idade_bia FROM planilha WHERE name = 'ana'",
+            "SELECT name, (SELECT age FROM spreadsheet WHERE name = 'bia') AS bia_age FROM spreadsheet WHERE name = 'ana'",
         )
         .expect("query should execute")
         .collect::<Vec<_>>();
@@ -364,7 +364,7 @@ fn returns_error_when_scalar_subquery_returns_multiple_rows() {
     let engine = SqlLikeQueryEngine;
     let result = engine.execute(
         &source,
-        "SELECT name, (SELECT age FROM planilha) AS qualquer_idade FROM planilha WHERE name = 'ana'",
+        "SELECT name, (SELECT age FROM spreadsheet) AS any_age FROM spreadsheet WHERE name = 'ana'",
     );
 
     match result {
@@ -389,7 +389,7 @@ fn executes_order_by_with_scalar_subquery_projection_by_position() {
     let result = engine
         .execute(
             &source,
-            "SELECT name, (SELECT p2.age FROM planilha p2 WHERE p2.name = planilha.name) AS own_age FROM planilha ORDER BY 2 DESC",
+            "SELECT name, (SELECT p2.age FROM spreadsheet p2 WHERE p2.name = spreadsheet.name) AS own_age FROM spreadsheet ORDER BY 2 DESC",
         )
         .expect("query should execute")
         .collect::<Vec<_>>();
@@ -415,7 +415,7 @@ fn executes_order_by_non_projected_column_with_scalar_subquery_projection() {
     let result = engine
         .execute(
             &source,
-            "SELECT name, (SELECT p2.age FROM planilha p2 WHERE p2.name = planilha.name) AS own_age FROM planilha ORDER BY age DESC",
+            "SELECT name, (SELECT p2.age FROM spreadsheet p2 WHERE p2.name = spreadsheet.name) AS own_age FROM spreadsheet ORDER BY age DESC",
         )
         .expect("query should execute")
         .collect::<Vec<_>>();
@@ -441,7 +441,7 @@ fn executes_where_exists_non_correlated() {
     let result = engine
         .execute(
             &source,
-            "SELECT name FROM planilha WHERE EXISTS (SELECT 1 FROM planilha WHERE age > 20) ORDER BY name",
+            "SELECT name FROM spreadsheet WHERE EXISTS (SELECT 1 FROM spreadsheet WHERE age > 20) ORDER BY name",
         )
         .expect("query should execute")
         .collect::<Vec<_>>();
@@ -467,7 +467,7 @@ fn executes_where_not_exists_non_correlated() {
     let result = engine
         .execute(
             &source,
-            "SELECT name FROM planilha WHERE NOT EXISTS (SELECT 1 FROM planilha WHERE age > 20)",
+            "SELECT name FROM spreadsheet WHERE NOT EXISTS (SELECT 1 FROM spreadsheet WHERE age > 20)",
         )
         .expect("query should execute")
         .collect::<Vec<_>>();
@@ -490,7 +490,7 @@ fn executes_where_exists_correlated() {
     let result = engine
         .execute(
             &source,
-            "SELECT name FROM planilha p WHERE EXISTS (SELECT 1 FROM planilha p2 WHERE p2.age = p.age AND p2.age > 20)",
+            "SELECT name FROM spreadsheet p WHERE EXISTS (SELECT 1 FROM spreadsheet p2 WHERE p2.age = p.age AND p2.age > 20)",
         )
         .expect("query should execute")
         .collect::<Vec<_>>();
@@ -514,7 +514,7 @@ fn executes_where_not_exists_correlated() {
     let result = engine
         .execute(
             &source,
-            "SELECT name FROM planilha p WHERE NOT EXISTS (SELECT 1 FROM planilha p2 WHERE p2.age = p.age AND p2.age > 20) ORDER BY name",
+            "SELECT name FROM spreadsheet p WHERE NOT EXISTS (SELECT 1 FROM spreadsheet p2 WHERE p2.age = p.age AND p2.age > 20) ORDER BY name",
         )
         .expect("query should execute")
         .collect::<Vec<_>>();

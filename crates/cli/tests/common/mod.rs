@@ -66,8 +66,8 @@ pub fn create_activity_time_fixture(path: &Path) -> Result<(), Box<dyn Error>> {
     let worksheet = workbook.add_worksheet();
     worksheet.set_name("Times")?;
 
-    worksheet.write_string(0, 0, "Atividade")?;
-    worksheet.write_string(0, 1, "Tempo")?;
+    worksheet.write_string(0, 0, "Activity")?;
+    worksheet.write_string(0, 1, "Time")?;
 
     worksheet.write_string(1, 0, "A")?;
     worksheet.write_number(1, 1, 10.0)?;

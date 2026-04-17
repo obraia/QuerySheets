@@ -17,8 +17,8 @@ import type { ExportFormat, QueryResult, StatusMessage, WorkspaceOverview } from
 
 const defaultSql = [
   "SELECT c.CustomerName, o.Amount",
-  "FROM exemplo.Customers c",
-  "LEFT JOIN exemplo.Orders o ON c.CustomerId = o.CustomerId",
+  "FROM sheet_name.Customers c",
+  "LEFT JOIN sheet_name.Orders o ON c.CustomerId = o.CustomerId",
   "LIMIT 100"
 ].join("\n");
 

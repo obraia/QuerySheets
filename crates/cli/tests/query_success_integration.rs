@@ -119,19 +119,19 @@ fn query_outputs_group_by_min_max_header_and_rows() -> Result<(), Box<dyn Error>
 }
 
 #[test]
-fn query_outputs_casted_group_by_aggregates_with_mixed_tempo_values() -> Result<(), Box<dyn Error>> {
+fn query_outputs_casted_group_by_aggregates_with_mixed_Time_values() -> Result<(), Box<dyn Error>> {
     let tmp = tempdir()?;
     let fixture = tmp.path().join("times.xlsx");
     create_activity_time_fixture(&fixture)?;
 
-    let sql = "SELECT Atividade, COUNT(*) AS Qtde, AVG(CAST(Tempo AS FLOAT)) AS TempoMedio, SUM(CAST(Tempo AS FLOAT)) AS TempoTotal, MIN(CAST(Tempo AS FLOAT)) AS TempoMinimo, MAX(CAST(Tempo AS FLOAT)) AS TempoMaximo FROM Times GROUP BY Atividade";
+    let sql = "SELECT Activity, COUNT(*) AS Quantity, AVG(CAST(Time AS FLOAT)) AS AvgTime, SUM(CAST(Time AS FLOAT)) AS TotalTime, MIN(CAST(Time AS FLOAT)) AS MinTime, MAX(CAST(Time AS FLOAT)) AS MaxTime FROM Times GROUP BY Activity";
     let stdout = run_cli_query(&fixture, sql, None, true)?;
     let lines = stdout.lines().collect::<Vec<_>>();
 
     assert_eq!(lines.len(), 3);
     assert_eq!(
         lines[0],
-        "Atividade\tQtde\tTempoMedio\tTempoTotal\tTempoMinimo\tTempoMaximo"
+        "Activity\tQuantity\tAvgTime\tTotalTime\tMinTime\tMaxTime"
     );
     assert_eq!(lines[1], "A\t3\t15\t30\t10\t20");
     assert_eq!(lines[2], "B\t2\t5.5\t5.5\t5.5\t5.5");
@@ -145,12 +145,12 @@ fn query_outputs_group_by_count_column_with_cast_expression() -> Result<(), Box<
     let fixture = tmp.path().join("times.xlsx");
     create_activity_time_fixture(&fixture)?;
 
-    let sql = "SELECT Atividade, COUNT(CAST(Tempo AS FLOAT)) AS NumericTempoRows FROM Times GROUP BY Atividade";
+    let sql = "SELECT Activity, COUNT(CAST(Time AS FLOAT)) AS NumericTimeRows FROM Times GROUP BY Activity";
     let stdout = run_cli_query(&fixture, sql, None, true)?;
     let lines = stdout.lines().collect::<Vec<_>>();
 
     assert_eq!(lines.len(), 3);
-    assert_eq!(lines[0], "Atividade\tNumericTempoRows");
+    assert_eq!(lines[0], "Activity\tNumericTimeRows");
     assert_eq!(lines[1], "A\t2");
     assert_eq!(lines[2], "B\t1");
 
@@ -163,12 +163,12 @@ fn query_outputs_group_by_stddev_with_cast_expression() -> Result<(), Box<dyn Er
     let fixture = tmp.path().join("times.xlsx");
     create_activity_time_fixture(&fixture)?;
 
-    let sql = "SELECT Atividade, STDDEV(CAST(Tempo AS FLOAT)) AS StdTempo FROM Times GROUP BY Atividade";
+    let sql = "SELECT Activity, STDDEV(CAST(Time AS FLOAT)) AS StdTime FROM Times GROUP BY Activity";
     let stdout = run_cli_query(&fixture, sql, None, true)?;
     let lines = stdout.lines().collect::<Vec<_>>();
 
     assert_eq!(lines.len(), 3);
-    assert_eq!(lines[0], "Atividade\tStdTempo");
+    assert_eq!(lines[0], "Activity\tStdTime");
     assert_eq!(lines[1], "A\t5");
     assert_eq!(lines[2], "B\t0");
 
