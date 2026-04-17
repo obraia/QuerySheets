@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import type { QueryResult } from "../types/query";
+import { useI18n } from "../i18n";
 
 const EXCEL_EPOCH_UTC_MS = Date.UTC(1899, 11, 30);
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -90,6 +91,7 @@ export function ResultsPanel({
   onNextPage,
   onPageSizeChange
 }: ResultsPanelProps): JSX.Element {
+  const { t } = useI18n();
   const columns = result?.columns ?? [];
   const rows = result?.rows ?? [];
   const paginationDisabled = isLoading || !result;
@@ -154,20 +156,20 @@ export function ResultsPanel({
   return (
     <section className="grid h-full min-h-0 grid-rows-[auto_auto_minmax(0,1fr)] rounded-2xl border border-slate-200/70 bg-white/90 shadow-[0_16px_40px_-26px_rgba(15,23,42,0.45)] backdrop-blur-md">
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3 lg:px-5">
-        <p className="text-sm font-semibold text-slate-800">Results</p>
+        <p className="text-sm font-semibold text-slate-800">{t("results.title")}</p>
 
         <div className="flex flex-wrap items-center justify-end gap-3">
           {isLoading && (
             <p className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-500" aria-live="polite">
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-teal-500" />
-              Executing...
+              {t("results.executing")}
             </p>
           )}
 
           <p className="text-xs text-slate-500">{resultMeta}</p>
 
           <div className="inline-flex items-center gap-2 text-xs text-slate-600">
-            <span>Rows per page</span>
+            <span>{t("results.rowsPerPage")}</span>
             <select
               className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 outline-none transition focus:border-sky-400 disabled:cursor-not-allowed disabled:opacity-60"
               value={pageSize}
@@ -183,15 +185,15 @@ export function ResultsPanel({
           </div>
 
           <div className="inline-flex items-center gap-2 text-xs">
-            <span className="text-slate-600">Page {currentPage}</span>
-            <span className="text-slate-500">· {totalRows} total</span>
+            <span className="text-slate-600">{t("results.page")} {currentPage}</span>
+            <span className="text-slate-500">· {t("results.total", { count: totalRows })}</span>
             <button
               type="button"
               className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60"
               onClick={onPreviousPage}
               disabled={paginationDisabled || currentPage <= 1}
             >
-              Previous
+              {t("results.previous")}
             </button>
             <button
               type="button"
@@ -199,7 +201,7 @@ export function ResultsPanel({
               onClick={onNextPage}
               disabled={paginationDisabled || !hasNextPage}
             >
-              Next
+              {t("results.next")}
             </button>
           </div>
         </div>
@@ -214,7 +216,7 @@ export function ResultsPanel({
       <div className="min-h-0 overflow-y-auto overflow-x-auto px-4 pb-4 pt-3 lg:px-5 lg:pb-5">
         {!error && !result && !isLoading && (
           <div className="flex h-full min-h-[140px] items-center justify-center rounded-xl border border-dashed border-slate-300 bg-slate-50/70 px-4 text-sm text-slate-500">
-            Run a query to see results.
+            {t("results.runToSee")}
           </div>
         )}
 
@@ -222,14 +224,14 @@ export function ResultsPanel({
           <div className="flex h-full min-h-[140px] items-center justify-center rounded-xl border border-dashed border-slate-300 bg-slate-50/70 px-4 text-sm text-slate-500">
             <span className="inline-flex items-center gap-2">
               <span className="h-3 w-3 animate-spin rounded-full border-2 border-slate-300 border-t-teal-500" />
-              Executing query...
+              {t("results.executingQuery")}
             </span>
           </div>
         )}
 
         {!error && result && columns.length === 0 && (
           <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50/70 px-4 py-8 text-center text-sm text-slate-500">
-            No columns in result.
+            {t("results.noColumns")}
           </div>
         )}
 

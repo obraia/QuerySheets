@@ -237,7 +237,7 @@ fn session_returns_error_for_folder_query_without_file_alias() -> Result<(), Box
         .success();
 
     let stderr = String::from_utf8(assert.get_output().stderr.clone())?;
-    assert!(stderr.contains("in folder mode use FROM <arquivo>.<worksheet>"));
+    assert!(stderr.contains("in folder mode use FROM <file_alias>.<worksheet>"));
 
     Ok(())
 }

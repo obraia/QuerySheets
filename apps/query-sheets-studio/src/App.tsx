@@ -5,6 +5,7 @@ import { ExplorerPanel } from "./components/ExplorerPanel.js";
 import { ResultsPanel } from "./components/ResultsPanel.js";
 import { StatusBar } from "./components/StatusBar.js";
 import { TitleBar } from "./components/TitleBar.js";
+import { useI18n } from "./i18n";
 import {
   executeSql,
   exportSql,
@@ -92,10 +93,11 @@ const SqlEditorPanel = lazy(async () => {
 });
 
 export function App(): JSX.Element {
+  const { t } = useI18n();
   const [workspace, setWorkspace] = useState<WorkspaceOverview | null>(null);
   const [sql, setSql] = useState(defaultSql);
   const [result, setResult] = useState<QueryResult | null>(null);
-  const [resultMeta, setResultMeta] = useState("No query executed");
+  const [resultMeta, setResultMeta] = useState(() => t("status.noQuery"));
   const [error, setError] = useState<string | null>(null);
   const [isRunningQuery, setIsRunningQuery] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
@@ -104,11 +106,11 @@ export function App(): JSX.Element {
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(100);
   const [status, setStatus] = useState<StatusMessage>({
-    message: "Ready",
+    message: t("status.ready"),
     isError: false
   });
 
-  const folderPath = workspace?.root_path ?? "Open a folder with spreadsheets";
+  const folderPath = workspace?.root_path ?? t("status.openFolderBeforeQuery");
 
   const isBusy = useMemo(() => isRunningQuery || isExporting, [isExporting, isRunningQuery]);
   const totalRows = result?.rows.length ?? 0;
@@ -144,7 +146,7 @@ export function App(): JSX.Element {
       setError(null);
       setResult(null);
       setCurrentPage(1);
-      setResultMeta("No query executed");
+      setResultMeta(t("status.noQuery"));
 
       if (overview.files.length > 0) {
         const first = overview.files[0];
@@ -152,11 +154,11 @@ export function App(): JSX.Element {
         setSql(`SELECT * FROM ${first.alias}.${firstSheet} LIMIT 100`);
       }
 
-      setStatus({ message: "Folder opened", isError: false });
+      setStatus({ message: t("status.folderOpened"), isError: false });
     } catch (err) {
       setStatus({ message: String(err), isError: true });
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -168,9 +170,12 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     void setParallelEnabled(parallelEnabled).catch((err) => {
-      setStatus({ message: `Parallel toggle unavailable: ${String(err)}`, isError: true });
+      setStatus({
+        message: t("status.parallelUnavailable", { error: String(err) }),
+        isError: true
+      });
     });
-  }, [parallelEnabled]);
+  }, [parallelEnabled, t]);
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
@@ -195,13 +200,13 @@ export function App(): JSX.Element {
           const droppedPath = event.payload.paths[0];
 
           if (!droppedPath) {
-            setStatus({ message: "No folder found in drop", isError: true });
+            setStatus({ message: t("status.dragNoFolder"), isError: true });
             return;
           }
 
           const resolvedFolderPath = resolveDroppedFolderPath(droppedPath);
           if (!resolvedFolderPath) {
-            setStatus({ message: "Could not resolve folder from dropped item", isError: true });
+            setStatus({ message: t("status.dragResolveFailed"), isError: true });
             return;
           }
 
@@ -217,7 +222,7 @@ export function App(): JSX.Element {
         unlisten = fn;
       })
       .catch((err) => {
-        setStatus({ message: `Drag-and-drop unavailable: ${String(err)}`, isError: true });
+        setStatus({ message: t("status.dragUnavailable", { error: String(err) }), isError: true });
       });
 
     return () => {
@@ -226,7 +231,7 @@ export function App(): JSX.Element {
         unlisten();
       }
     };
-  }, [openWorkspaceFolder]);
+  }, [openWorkspaceFolder, t]);
 
   async function handleOpenFolder(): Promise<void> {
     const folder = await open({ directory: true, multiple: false });
@@ -240,14 +245,14 @@ export function App(): JSX.Element {
 
   async function handleRefreshWorkspace(): Promise<void> {
     if (!workspace) {
-      setStatus({ message: "Open a folder before refreshing", isError: true });
+      setStatus({ message: t("status.openFolderBeforeRefresh"), isError: true });
       return;
     }
 
     try {
       const overview = await refreshWorkspaceOverview();
       setWorkspace(overview);
-      setStatus({ message: "Workspace refreshed", isError: false });
+      setStatus({ message: t("status.workspaceRefreshed"), isError: false });
     } catch (err) {
       setStatus({ message: String(err), isError: true });
     }
@@ -255,19 +260,19 @@ export function App(): JSX.Element {
 
   function handlePickSheet(alias: string, sheet: string): void {
     setSql(`SELECT * FROM ${alias}.${sheet} LIMIT 100`);
-    setStatus({ message: `Loaded ${alias}.${sheet} into editor`, isError: false });
+    setStatus({ message: t("status.loadedSheet", { table: `${alias}.${sheet}` }), isError: false });
   }
 
   async function handleRunQuery(): Promise<void> {
     const trimmedSql = sql.trim();
 
     if (!trimmedSql) {
-      setStatus({ message: "Type a query first", isError: true });
+      setStatus({ message: t("status.typeQueryFirst"), isError: true });
       return;
     }
 
     if (!workspace) {
-      setStatus({ message: "Open a folder before querying", isError: true });
+      setStatus({ message: t("status.openFolderBeforeQuery"), isError: true });
       return;
     }
 
@@ -276,7 +281,7 @@ export function App(): JSX.Element {
     try {
       setIsRunningQuery(true);
       setError(null);
-      setStatus({ message: "Running query...", isError: false });
+      setStatus({ message: t("status.runningQuery"), isError: false });
 
       // Give React one paint cycle so the loading indicator is visible
       // before the IPC/query work starts.
@@ -286,16 +291,18 @@ export function App(): JSX.Element {
       setResult(queryResult);
       setCurrentPage(1);
       setResultMeta(
-        `${queryResult.displayed_rows} total row(s) in ${queryResult.elapsed_ms} ms${
-          queryResult.truncated ? " (truncated)" : ""
-        }`
+        t("meta.rows", {
+          rows: queryResult.displayed_rows,
+          elapsed: queryResult.elapsed_ms,
+          suffix: queryResult.truncated ? t("meta.truncated") : ""
+        })
       );
-      setStatus({ message: "Query executed", isError: false });
+      setStatus({ message: t("status.queryExecuted"), isError: false });
     } catch (err) {
       setResult(null);
-      setResultMeta("Query failed");
+      setResultMeta(t("status.queryFailed"));
       setError(String(err));
-      setStatus({ message: "Query failed", isError: true });
+      setStatus({ message: t("status.queryFailed"), isError: true });
     } finally {
       const elapsed = performance.now() - loadingStart;
       if (elapsed < MIN_QUERY_LOADING_MS) {
@@ -335,18 +342,21 @@ export function App(): JSX.Element {
     const trimmedSql = sql.trim();
 
     if (!trimmedSql) {
-      setStatus({ message: "Type a query first", isError: true });
+      setStatus({ message: t("status.typeQueryFirst"), isError: true });
       return;
     }
 
     if (!workspace) {
-      setStatus({ message: "Open a folder before exporting", isError: true });
+      setStatus({ message: t("status.openFolderBeforeExport"), isError: true });
       return;
     }
 
     try {
       setIsExporting(true);
-      setStatus({ message: `Exporting ${format.toUpperCase()}...`, isError: false });
+      setStatus({
+        message: t("status.exporting", { format: format.toUpperCase() }),
+        isError: false
+      });
 
       const selectedPath = await save({
         defaultPath: `${workspace.root_path}/query-result.${format}`,
@@ -359,17 +369,21 @@ export function App(): JSX.Element {
       });
 
       if (!selectedPath || typeof selectedPath !== "string") {
-        setStatus({ message: "Export canceled", isError: false });
+        setStatus({ message: t("status.exportCanceled"), isError: false });
         return;
       }
 
       const exportResult = await exportSql(trimmedSql, selectedPath, format, false);
       setStatus({
-        message: `Exported ${exportResult.exported_rows} row(s) to ${exportResult.output_path} in ${exportResult.elapsed_ms} ms`,
+        message: t("status.exported", {
+          rows: exportResult.exported_rows,
+          path: exportResult.output_path,
+          elapsed: exportResult.elapsed_ms
+        }),
         isError: false
       });
     } catch (err) {
-      setStatus({ message: `Export failed: ${String(err)}`, isError: true });
+      setStatus({ message: t("status.exportFailed", { error: String(err) }), isError: true });
     } finally {
       setIsExporting(false);
     }
@@ -378,7 +392,7 @@ export function App(): JSX.Element {
   function handleParallelToggle(enabled: boolean): void {
     setParallelExecutionEnabled(enabled);
     setStatus({
-      message: enabled ? "Parallel execution enabled" : "Parallel execution disabled",
+      message: enabled ? t("status.parallelEnabled") : t("status.parallelDisabled"),
       isError: false
     });
   }
@@ -405,7 +419,7 @@ export function App(): JSX.Element {
               <section className="rounded-2xl border border-slate-200/70 bg-white/90 shadow-[0_16px_40px_-26px_rgba(15,23,42,0.45)] backdrop-blur-md">
                 <header className="flex items-center justify-between border-b border-slate-100 px-4 py-3 lg:px-5">
                   <p className="text-sm font-semibold text-slate-800">query.sql</p>
-                  <p className="text-xs text-slate-500">Loading editor...</p>
+                  <p className="text-xs text-slate-500">{t("editor.loading")}</p>
                 </header>
                 <div className="min-h-[210px] w-full bg-slate-950/95" />
               </section>
@@ -444,7 +458,7 @@ export function App(): JSX.Element {
       {isDragOverWindow && (
         <div className="pointer-events-none absolute inset-4 z-50 flex items-center justify-center rounded-3xl border-2 border-dashed border-teal-400/80 bg-white/65 backdrop-blur-sm">
           <div className="rounded-xl border border-teal-200 bg-white px-5 py-3 text-sm font-semibold text-teal-700 shadow-sm">
-            Drop folder to open workspace
+            {t("dropzone.hint")}
           </div>
         </div>
       )}

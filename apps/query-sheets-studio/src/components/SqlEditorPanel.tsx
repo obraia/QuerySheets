@@ -12,6 +12,7 @@ import { oneDark } from "@codemirror/theme-one-dark";
 import { keymap } from "@codemirror/view";
 import { ChevronDown, Download } from "lucide-react";
 import type { ExportFormat, WorkspaceOverview } from "../types/query";
+import { useI18n } from "../i18n";
 
 type SqlSuggestionContext = "select" | "fromJoin" | "filter" | "generic";
 
@@ -232,6 +233,7 @@ export function SqlEditorPanel({
   isExporting,
   workspace
 }: SqlEditorPanelProps): JSX.Element {
+  const { t } = useI18n();
   const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
   const exportMenuRef = useRef<HTMLDivElement | null>(null);
 
@@ -468,8 +470,8 @@ export function SqlEditorPanel({
         <div className="relative flex items-center gap-3" ref={exportMenuRef}>
           <p className="text-xs text-slate-500">
             {isRunning
-              ? "Executing"
-              : "Cmd/Ctrl + Enter or Shift + Enter run · Cmd/Ctrl/Alt + Space autocomplete"}
+              ? t("editor.executing")
+              : t("editor.shortcuts")}
           </p>
 
           <button
@@ -480,7 +482,7 @@ export function SqlEditorPanel({
             className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-medium text-slate-600 transition hover:border-sky-300 hover:text-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
             onClick={() => setIsExportMenuOpen((open) => !open)}
             disabled={exportDisabled}
-            title={!workspace ? "Open a folder before exporting" : "Export query result"}
+            title={!workspace ? t("editor.exportOpenFolder") : t("editor.export")}
           >
             <Download size={14} strokeWidth={2} />
             <ChevronDown size={14} strokeWidth={2} className={isExportMenuOpen ? "rotate-180" : ""} />
@@ -493,7 +495,7 @@ export function SqlEditorPanel({
               className="absolute right-0 top-[calc(100%+8px)] z-20 w-48 rounded-xl border border-slate-200 bg-white p-2 shadow-lg"
             >
               <p className="mb-1 px-2 pt-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">
-                Export Format
+                {t("editor.exportFormat")}
               </p>
 
               <div className="grid gap-1">

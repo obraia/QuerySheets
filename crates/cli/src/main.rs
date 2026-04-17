@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use query_sheets_adapters::create_excel_source;
 use query_sheets_core::{DataSource, Row, Schema, Value};
 use query_sheets_query::{
@@ -14,29 +14,45 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Parser)]
 #[command(name = "query-sheets")]
-#[command(about = "CLI para consultar arquivos Excel com SQL-like")]
+#[command(about = "CLI to query spreadsheet files with SQL-like syntax")]
 struct Cli {
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = CliLanguage::En,
+        global = true,
+        help = "CLI language"
+    )]
+    lang: CliLanguage,
+
     #[command(subcommand)]
     command: Commands,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliLanguage {
+    En,
+    #[value(name = "pt-BR")]
+    PtBr,
 }
 
 #[derive(Debug, Subcommand)]
 enum Commands {
     Query {
-        #[arg(short, long, help = "Caminho para o arquivo .xlsx")]
+        #[arg(short, long, help = "Path to the spreadsheet file")]
         file: String,
-        #[arg(short = 'q', long, help = "Consulta SQL-like")]
+        #[arg(short = 'q', long, help = "SQL-like query")]
         sql: String,
-        #[arg(short, long, help = "Nome da planilha (sobrescreve o FROM da query)")]
+        #[arg(short, long, help = "Worksheet name (overrides query FROM table)")]
         sheet: Option<String>,
-        #[arg(long, default_value_t = false, help = "Imprime cabeçalho da projeção")]
+        #[arg(long, default_value_t = false, help = "Print projection header")]
         header: bool,
-        #[arg(long, help = "Caminho do arquivo de saída (.csv, .json ou .jsonl)")]
+        #[arg(long, help = "Output path (.csv, .json, or .jsonl)")]
         output: Option<String>,
         #[arg(
             long,
             default_value_t = false,
-            help = "Ativa comparação de texto case-sensitive no WHERE e ORDER BY"
+            help = "Enable case-sensitive string comparison in WHERE and ORDER BY"
         )]
         case_sensitive_strings: bool,
     },
@@ -44,15 +60,15 @@ enum Commands {
         #[arg(
             long,
             short,
-            help = "Caminho para arquivo de planilha ou pasta com arquivos de planilha"
+            help = "Path to a spreadsheet file or a folder with spreadsheet files"
         )]
         path: String,
-        #[arg(long, default_value_t = false, help = "Imprime cabeçalho da projeção")]
+        #[arg(long, default_value_t = false, help = "Print projection header")]
         header: bool,
         #[arg(
             long,
             default_value_t = false,
-            help = "Ativa comparação de texto case-sensitive no WHERE e ORDER BY"
+            help = "Enable case-sensitive string comparison in WHERE and ORDER BY"
         )]
         case_sensitive_strings: bool,
     },
@@ -60,13 +76,14 @@ enum Commands {
 
 fn main() {
     if let Err(err) = run() {
-        eprintln!("erro: {err}");
+        eprintln!("error: {err}");
         std::process::exit(1);
     }
 }
 
 fn run() -> Result<(), String> {
     let cli = Cli::parse();
+    let lang = cli.lang;
 
     match cli.command {
         Commands::Query {
@@ -76,12 +93,20 @@ fn run() -> Result<(), String> {
             header,
             output,
             case_sensitive_strings,
-        } => run_single_query(&file, &sql, sheet, header, output, case_sensitive_strings)?,
+        } => run_single_query(
+            &file,
+            &sql,
+            sheet,
+            header,
+            output,
+            case_sensitive_strings,
+            lang,
+        )?,
         Commands::Session {
             path,
             header,
             case_sensitive_strings,
-        } => run_session(&path, header, case_sensitive_strings)?,
+        } => run_session(&path, header, case_sensitive_strings, lang)?,
     }
 
     Ok(())
@@ -94,8 +119,9 @@ fn run_single_query(
     header: bool,
     output: Option<String>,
     case_sensitive_strings: bool,
+    lang: CliLanguage,
 ) -> Result<(), String> {
-    let mut catalog = SessionCatalog::new(file)?;
+    let mut catalog = SessionCatalog::new(file, lang)?;
 
     let primary_source = if let Some(sheet_name) = sheet {
         let source = create_excel_source(file, Some(&sheet_name)).map_err(|err| err.to_string())?;
@@ -117,7 +143,7 @@ fn run_single_query(
         .map_err(|err| err.to_string())?;
 
     if let Some(output_path) = output.as_deref() {
-        match detect_export_format(output_path)? {
+        match detect_export_format(output_path, lang)? {
             DetectedExportFormat::Csv => write_csv(output_path, &execution.schema, execution.rows.by_ref())?,
             DetectedExportFormat::Json => {
                 write_json(output_path, &execution.schema, execution.rows.by_ref())?
@@ -154,16 +180,21 @@ fn run_single_query(
     Ok(())
 }
 
-fn run_session(path: &str, header: bool, case_sensitive_strings: bool) -> Result<(), String> {
-    let mut catalog = SessionCatalog::new(path)?;
+fn run_session(
+    path: &str,
+    header: bool,
+    case_sensitive_strings: bool,
+    lang: CliLanguage,
+) -> Result<(), String> {
+    let mut catalog = SessionCatalog::new(path, lang)?;
     let engine = SqlLikeQueryEngine.with_case_sensitive_strings(case_sensitive_strings);
 
-    println!("query-sheets session mode");
-    println!("Digite SQL e pressione Enter. Use .exit para sair, .help para ajuda e .clear para limpar.");
+    println!("{}", tr(lang, "session_mode"));
+    println!("{}", tr(lang, "session_intro"));
 
     if io::stdin().is_terminal() && io::stdout().is_terminal() {
         let mut editor = DefaultEditor::new()
-            .map_err(|err| format!("failed to initialize interactive editor: {err}"))?;
+            .map_err(|err| format!("{}: {err}", tr(lang, "failed_init_editor")))?;
 
         loop {
             match editor.readline("query-sheets> ") {
@@ -175,12 +206,12 @@ fn run_session(path: &str, header: bool, case_sensitive_strings: bool) -> Result
 
                     let _ = editor.add_history_entry(input);
 
-                    if !process_session_input(input, header, &engine, &mut catalog) {
+                    if !process_session_input(input, header, &engine, &mut catalog, lang) {
                         break;
                     }
                 }
                 Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => break,
-                Err(err) => return Err(format!("failed to read interactive input: {err}")),
+                Err(err) => return Err(format!("{}: {err}", tr(lang, "failed_read_interactive"))),
             }
         }
     } else {
@@ -189,18 +220,18 @@ fn run_session(path: &str, header: bool, case_sensitive_strings: bool) -> Result
             print!("query-sheets> ");
             io::stdout()
                 .flush()
-                .map_err(|err| format!("failed to flush prompt: {err}"))?;
+                .map_err(|err| format!("{}: {err}", tr(lang, "failed_flush_prompt")))?;
 
             let mut line = String::new();
             let bytes_read = stdin
                 .read_line(&mut line)
-                .map_err(|err| format!("failed to read input: {err}"))?;
+                .map_err(|err| format!("{}: {err}", tr(lang, "failed_read_input")))?;
 
             if bytes_read == 0 {
                 break;
             }
 
-            if !process_session_input(line.trim(), header, &engine, &mut catalog) {
+            if !process_session_input(line.trim(), header, &engine, &mut catalog, lang) {
                 break;
             }
         }
@@ -214,6 +245,7 @@ fn process_session_input(
     header: bool,
     engine: &ConfiguredSqlLikeQueryEngine,
     catalog: &mut SessionCatalog,
+    lang: CliLanguage,
 ) -> bool {
     if input.is_empty() {
         return true;
@@ -227,22 +259,25 @@ fn process_session_input(
     }
 
     if matches!(input.to_ascii_lowercase().as_str(), ".help" | "help") {
-        println!("Comandos:");
-        println!("  .help  - mostra esta ajuda");
-        println!("  .cache - mostra quantidade de tabelas no cache");
-        println!("  .clear - limpa o console");
-        println!("  .exit  - encerra o modo sessão");
+        println!("{}", tr(lang, "help_commands"));
+        println!("{}", tr(lang, "help_help"));
+        println!("{}", tr(lang, "help_cache"));
+        println!("{}", tr(lang, "help_clear"));
+        println!("{}", tr(lang, "help_exit"));
         return true;
     }
 
     if input.eq_ignore_ascii_case(".cache") {
-        println!("cached tables: {}", catalog.cache_len());
+        println!(
+            "{}",
+            trf(lang, "cached_tables", &[catalog.cache_len().to_string()])
+        );
         return true;
     }
 
     if matches!(input.to_ascii_lowercase().as_str(), ".clear" | "clear") {
         if let Err(err) = clear_console() {
-            eprintln!("erro: {err}");
+            eprintln!("{}: {err}", tr(lang, "error_prefix"));
         }
         return true;
     }
@@ -252,7 +287,7 @@ fn process_session_input(
     let primary_source = match catalog.source_for_query(sql) {
         Ok(source) => source.clone(),
         Err(err) => {
-            eprintln!("erro: {err}");
+            eprintln!("{}: {err}", tr(lang, "error_prefix"));
             return true;
         }
     };
@@ -264,7 +299,7 @@ fn process_session_input(
     }) {
         Ok(execution) => execution,
         Err(err) => {
-            eprintln!("erro: {err}");
+            eprintln!("{}: {err}", tr(lang, "error_prefix"));
             return true;
         }
     };
@@ -332,10 +367,11 @@ impl DataSource for CachedTableSource {
 struct SessionCatalog {
     mode: SessionCatalogMode,
     cache: HashMap<String, CachedTableSource>,
+    lang: CliLanguage,
 }
 
 impl SessionCatalog {
-    fn new(path: &str) -> Result<Self, String> {
+    fn new(path: &str, lang: CliLanguage) -> Result<Self, String> {
         let resolved = PathBuf::from(path);
 
         if resolved.is_file() {
@@ -346,6 +382,7 @@ impl SessionCatalog {
                     alias,
                 },
                 cache: HashMap::new(),
+                lang,
             });
         }
 
@@ -393,6 +430,7 @@ impl SessionCatalog {
             return Ok(Self {
                 mode: SessionCatalogMode::Folder { files_by_alias },
                 cache: HashMap::new(),
+                lang,
             });
         }
 
@@ -409,7 +447,7 @@ impl SessionCatalog {
     fn source_for_query(&mut self, sql: &str) -> Result<&CachedTableSource, String> {
         let table_ref = extract_table_reference(sql)
             .map_err(|err| err.to_string())?
-            .ok_or_else(|| "query must include a table in FROM".to_string())?;
+            .ok_or_else(|| tr(self.lang, "query_missing_table").to_string())?;
 
         self.source_for_table_reference(&table_ref)
     }
@@ -475,8 +513,7 @@ impl SessionCatalog {
             }
             SessionCatalogMode::Folder { files_by_alias } => {
                 let schema = table_ref.schema.as_deref().ok_or_else(|| {
-                    "in folder mode use FROM <arquivo>.<worksheet> (dbo=tabela de arquivos)"
-                        .to_string()
+                    tr(self.lang, "folder_mode_from_hint").to_string()
                 })?;
 
                 let alias_key = schema.to_ascii_lowercase();
@@ -660,23 +697,92 @@ enum DetectedExportFormat {
     Jsonl,
 }
 
-fn detect_export_format(output_path: &str) -> Result<DetectedExportFormat, String> {
+fn detect_export_format(
+    output_path: &str,
+    lang: CliLanguage,
+) -> Result<DetectedExportFormat, String> {
     let extension = Path::new(output_path)
         .extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| ext.to_ascii_lowercase())
-        .ok_or_else(|| {
-            format!(
-                "could not detect export format from '{output_path}'. Use an output file ending with .csv, .json or .jsonl"
-            )
-        })?;
+        .ok_or_else(|| trf(lang, "export_format_not_detected", &[output_path.to_string()]))?;
 
     match extension.as_str() {
         "csv" => Ok(DetectedExportFormat::Csv),
         "json" => Ok(DetectedExportFormat::Json),
         "jsonl" => Ok(DetectedExportFormat::Jsonl),
-        _ => Err(format!(
-            "unsupported output extension '.{extension}'. Supported extensions: .csv, .json, .jsonl"
-        )),
+        _ => Err(trf(lang, "export_extension_unsupported", &[extension])),
+    }
+}
+
+fn tr(lang: CliLanguage, key: &str) -> &'static str {
+    match (lang, key) {
+        (CliLanguage::En, "error_prefix") => "error",
+        (CliLanguage::En, "session_mode") => "query-sheets session mode",
+        (CliLanguage::En, "session_intro") => {
+            "Type SQL and press Enter. Use .exit to quit, .help for help, and .clear to clear."
+        }
+        (CliLanguage::En, "failed_init_editor") => "failed to initialize interactive editor",
+        (CliLanguage::En, "failed_read_interactive") => "failed to read interactive input",
+        (CliLanguage::En, "failed_flush_prompt") => "failed to flush prompt",
+        (CliLanguage::En, "failed_read_input") => "failed to read input",
+        (CliLanguage::En, "help_commands") => "Commands:",
+        (CliLanguage::En, "help_help") => "  .help  - show this help",
+        (CliLanguage::En, "help_cache") => "  .cache - show number of cached tables",
+        (CliLanguage::En, "help_clear") => "  .clear - clear the console",
+        (CliLanguage::En, "help_exit") => "  .exit  - leave session mode",
+        (CliLanguage::En, "query_missing_table") => "query must include a table in FROM",
+        (CliLanguage::En, "folder_mode_from_hint") => {
+            "in folder mode use FROM <file_alias>.<worksheet>"
+        }
+
+        (CliLanguage::PtBr, "error_prefix") => "erro",
+        (CliLanguage::PtBr, "session_mode") => "modo sessao do query-sheets",
+        (CliLanguage::PtBr, "session_intro") => {
+            "Digite SQL e pressione Enter. Use .exit para sair, .help para ajuda e .clear para limpar."
+        }
+        (CliLanguage::PtBr, "failed_init_editor") => {
+            "falha ao inicializar o editor interativo"
+        }
+        (CliLanguage::PtBr, "failed_read_interactive") => {
+            "falha ao ler entrada interativa"
+        }
+        (CliLanguage::PtBr, "failed_flush_prompt") => "falha ao exibir o prompt",
+        (CliLanguage::PtBr, "failed_read_input") => "falha ao ler entrada",
+        (CliLanguage::PtBr, "help_commands") => "Comandos:",
+        (CliLanguage::PtBr, "help_help") => "  .help  - mostra esta ajuda",
+        (CliLanguage::PtBr, "help_cache") => "  .cache - mostra quantidade de tabelas no cache",
+        (CliLanguage::PtBr, "help_clear") => "  .clear - limpa o console",
+        (CliLanguage::PtBr, "help_exit") => "  .exit  - encerra o modo sessao",
+        (CliLanguage::PtBr, "query_missing_table") => "a query deve incluir uma tabela no FROM",
+        (CliLanguage::PtBr, "folder_mode_from_hint") => {
+            "no modo pasta use FROM <arquivo>.<worksheet>"
+        }
+        _ => "",
+    }
+}
+
+fn trf(lang: CliLanguage, key: &str, args: &[String]) -> String {
+    match (lang, key) {
+        (CliLanguage::En, "cached_tables") => format!("cached tables: {}", args[0]),
+        (CliLanguage::En, "export_format_not_detected") => format!(
+            "could not detect export format from '{}'. Use an output file ending with .csv, .json, or .jsonl",
+            args[0]
+        ),
+        (CliLanguage::En, "export_extension_unsupported") => format!(
+            "unsupported output extension '.{}'. Supported extensions: .csv, .json, .jsonl",
+            args[0]
+        ),
+
+        (CliLanguage::PtBr, "cached_tables") => format!("tabelas em cache: {}", args[0]),
+        (CliLanguage::PtBr, "export_format_not_detected") => format!(
+            "nao foi possivel detectar o formato de exportacao em '{}'. Use um arquivo de saida com extensao .csv, .json ou .jsonl",
+            args[0]
+        ),
+        (CliLanguage::PtBr, "export_extension_unsupported") => format!(
+            "extensao de saida '.{}' nao suportada. Extensoes suportadas: .csv, .json, .jsonl",
+            args[0]
+        ),
+        _ => String::new(),
     }
 }

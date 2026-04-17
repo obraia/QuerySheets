@@ -1,3 +1,5 @@
+import { useI18n } from "../i18n";
+
 type TitleBarProps = {
   folderPath: string;
   onOpenFolder: () => Promise<void>;
@@ -19,18 +21,32 @@ export function TitleBar({
   isBusy,
   isRunning
 }: TitleBarProps): JSX.Element {
+  const { language, setLanguage, t } = useI18n();
+
   return (
     <header className="rounded-2xl border border-slate-200/70 bg-white/85 p-4 shadow-[0_16px_40px_-26px_rgba(15,23,42,0.45)] backdrop-blur-md lg:p-5">
       <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
         <div>
-          <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Workspace</p>
-          <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-900">QuerySheets Studio</h1>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">{t("title.workspace")}</p>
+          <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-900">{t("title.appName")}</h1>
           <p className="mt-1 truncate text-sm text-slate-600" title={folderPath}>
             {folderPath}
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <label className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700">
+            <span>{t("title.language")}</span>
+            <select
+              className="rounded-lg border border-slate-200 bg-white px-1 py-0.5 text-xs text-slate-700"
+              value={language}
+              onChange={(event) => setLanguage(event.target.value as "en" | "pt-BR")}
+              disabled={isBusy}
+            >
+              <option value="en">EN</option>
+              <option value="pt-BR">PT-BR</option>
+            </select>
+          </label>
           <label className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700">
             <input
               type="checkbox"
@@ -39,7 +55,7 @@ export function TitleBar({
               onChange={(event) => onParallelToggle(event.target.checked)}
               disabled={isBusy}
             />
-            Parallel
+            {t("title.parallel")}
           </label>
           <button
             type="button"
@@ -47,7 +63,7 @@ export function TitleBar({
             onClick={onOpenFolder}
             disabled={isBusy}
           >
-            Open Folder
+            {t("title.openFolder")}
           </button>
           <button
             type="button"
@@ -55,7 +71,7 @@ export function TitleBar({
             onClick={onRefresh}
             disabled={isBusy}
           >
-            Refresh
+            {t("title.refresh")}
           </button>
           <button
             type="button"
@@ -63,7 +79,7 @@ export function TitleBar({
             onClick={onRunQuery}
             disabled={isBusy}
           >
-            {isRunning ? "Running..." : "Run Query"}
+            {isRunning ? t("title.running") : t("title.runQuery")}
           </button>
         </div>
       </div>
