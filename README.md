@@ -1,8 +1,8 @@
 # QuerySheets
 
-[![CI](https://img.shields.io/github/actions/workflow/status/obraia/QuerySheets/ci.yml?branch=main&label=CI)](https://github.com/obraia/QuerySheets/actions)
-[![Release](https://img.shields.io/github/v/release/obraia/QuerySheets?label=release)](https://github.com/obraia/QuerySheets/releases)
-[![License](https://img.shields.io/github/license/obraia/QuerySheets)](https://github.com/obraia/QuerySheets/blob/main/LICENSE)
+![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/obraia/QuerySheets/.github%2Fworkflows%2Frelease.yml)
+![GitHub Release](https://img.shields.io/github/v/release/obraia/QuerySheets?style=flat)
+![GitHub License](https://img.shields.io/github/license/obraia/QuerySheets?style=flat)
 
 SQL query engine for spreadsheet files, built in Rust.
 
