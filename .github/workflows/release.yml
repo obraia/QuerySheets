@@ -129,6 +129,17 @@ jobs:
           fi
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
+      - name: Ensure dist is available (unix)
+        if: ${{ !startsWith(matrix.runner, 'windows') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v dist >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.31.0/cargo-dist-installer.sh | sh
+          fi
+
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          command -v dist
       # Get the dist-manifest
       - name: Fetch local artifacts
         uses: actions/download-artifact@v7
