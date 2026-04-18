@@ -1,6 +1,7 @@
 use crate::QueryError;
 use crate::StringComparisonMode;
 use crate::text::compare_text_case_insensitive;
+use crate::text::like_pattern_matches;
 use query_sheets_core::{Row, Schema, Value};
 use sqlparser::ast::{BinaryOperator, DataType, Expr, Ident, UnaryOperator, Value as SqlValue};
 
@@ -70,6 +71,24 @@ pub(crate) fn eval_predicate(
             schema,
             string_comparison_mode,
         ),
+        Expr::Like {
+            negated,
+            any,
+            expr: inner,
+            pattern,
+            escape_char,
+        } => eval_like_predicate(
+            inner,
+            pattern,
+            *negated,
+            *any,
+            escape_char.as_deref(),
+            row,
+            schema,
+            string_comparison_mode,
+            expr,
+        ),
+        Expr::ILike { .. } => Err(QueryError::UnsupportedWhere(expr.to_string())),
         Expr::BinaryOp { left, op, right } => match op {
             BinaryOperator::And => {
                 Ok(
@@ -147,6 +166,39 @@ fn eval_in_list_predicate(
     }
 
     Ok(matched)
+}
+
+fn eval_like_predicate(
+    value_expr: &Expr,
+    pattern_expr: &Expr,
+    negated: bool,
+    any: bool,
+    escape_char: Option<&str>,
+    row: &Row,
+    schema: &Schema,
+    string_comparison_mode: StringComparisonMode,
+    original_expr: &Expr,
+) -> Result<bool, QueryError> {
+    if any || escape_char.is_some() {
+        return Err(QueryError::UnsupportedWhere(original_expr.to_string()));
+    }
+
+    let value = eval_value(value_expr, row, schema)?;
+    let pattern = eval_value(pattern_expr, row, schema)?;
+
+    let matched = match (value, pattern) {
+        (Value::Null, _) | (_, Value::Null) => false,
+        (Value::String(value), Value::String(pattern)) => {
+            like_pattern_matches(&value, &pattern, string_comparison_mode)
+        }
+        _ => return Err(QueryError::UnsupportedWhere(original_expr.to_string())),
+    };
+
+    if negated {
+        Ok(!matched)
+    } else {
+        Ok(matched)
+    }
 }
 
 pub(crate) fn eval_value(expr: &Expr, row: &Row, schema: &Schema) -> Result<Value, QueryError> {

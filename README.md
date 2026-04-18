@@ -41,7 +41,7 @@ QuerySheets lets you query `.xlsx` files with SQL syntax from the CLI and from a
 
 - `SELECT`, wildcard (`*`), aliases (`AS`), and arithmetic expressions
 - `CAST(expression AS type)` in projections and aggregate expressions
-- `WHERE` with `=`, `!=`, `>`, `<`, `>=`, `<=`, `AND`, `OR`
+- `WHERE` with `=`, `!=`, `>`, `<`, `>=`, `<=`, `LIKE`, `NOT LIKE`, `AND`, `OR`
 - `IN`, `NOT IN`, `EXISTS`, and scalar subquery flows used by tests
 - `INNER JOIN`, `LEFT JOIN`, `RIGHT JOIN` with alias support
 - `GROUP BY` with:

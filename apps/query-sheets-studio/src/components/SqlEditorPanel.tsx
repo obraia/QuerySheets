@@ -44,6 +44,8 @@ const SQL_KEYWORDS = [
   "AND",
   "OR",
   "NOT",
+  "LIKE",
+  "NOT LIKE",
   "COUNT",
   "SUM",
   "AVG",
