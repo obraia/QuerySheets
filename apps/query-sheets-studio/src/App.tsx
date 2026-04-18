@@ -13,7 +13,13 @@ import {
   setParallelEnabled,
   setWorkspaceFolder
 } from "./services/queryStudioApi.js";
-import type { ExportFormat, QueryResult, StatusMessage, WorkspaceOverview } from "./types/query.js";
+import type {
+  ExportFormat,
+  QueryHistoryEntry,
+  QueryResult,
+  StatusMessage,
+  WorkspaceOverview
+} from "./types/query.js";
 
 const defaultSql = [
   "SELECT c.CustomerName, o.Amount",
@@ -26,6 +32,8 @@ const MIN_QUERY_LOADING_MS = 280;
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 250, 500];
 const SPREADSHEET_EXTENSIONS = [".xlsx", ".xlsm", ".xls", ".xlsb", ".ods"];
 const PARALLEL_PREF_KEY = "querysheets.parallelEnabled";
+const QUERY_HISTORY_KEY = "querysheets.queryHistory";
+const QUERY_HISTORY_LIMIT = 8;
 
 function loadParallelPreference(): boolean {
   if (typeof window === "undefined") {
@@ -38,6 +46,45 @@ function loadParallelPreference(): boolean {
   }
 
   return raw !== "false";
+}
+
+function loadQueryHistory(): QueryHistoryEntry[] {
+  if (typeof window === "undefined") {
+    return [];
+  }
+
+  try {
+    const raw = window.localStorage.getItem(QUERY_HISTORY_KEY);
+    if (!raw) {
+      return [];
+    }
+
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed.filter((entry): entry is QueryHistoryEntry => {
+      return (
+        typeof entry === "object" &&
+        entry !== null &&
+        typeof entry.id === "string" &&
+        typeof entry.sql === "string" &&
+        typeof entry.workspace_root_path === "string" &&
+        typeof entry.created_at === "string"
+      );
+    });
+  } catch {
+    return [];
+  }
+}
+
+function persistQueryHistory(history: QueryHistoryEntry[]): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(QUERY_HISTORY_KEY, JSON.stringify(history));
 }
 
 function isSpreadsheetFilePath(path: string): boolean {
@@ -96,6 +143,7 @@ export function App(): JSX.Element {
   const { t } = useI18n();
   const [workspace, setWorkspace] = useState<WorkspaceOverview | null>(null);
   const [sql, setSql] = useState(defaultSql);
+  const [queryHistory, setQueryHistory] = useState<QueryHistoryEntry[]>(loadQueryHistory);
   const [result, setResult] = useState<QueryResult | null>(null);
   const [resultMeta, setResultMeta] = useState(() => t("status.noQuery"));
   const [error, setError] = useState<string | null>(null);
@@ -139,7 +187,37 @@ export function App(): JSX.Element {
     };
   }, [currentPage, pageSize, result]);
 
-  const openWorkspaceFolder = useCallback(async (folderPath: string): Promise<void> => {
+  const rememberQueryExecution = useCallback((sqlText: string, workspaceRootPath: string): void => {
+    const trimmedSql = sqlText.trim();
+    if (!trimmedSql || !workspaceRootPath.trim()) {
+      return;
+    }
+
+    setQueryHistory((current) => {
+      const nextEntry: QueryHistoryEntry = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+        sql: trimmedSql,
+        workspace_root_path: workspaceRootPath,
+        created_at: new Date().toISOString()
+      };
+
+      const deduped = current.filter((entry) => {
+        return !(
+          entry.sql.trim() === trimmedSql &&
+          entry.workspace_root_path === workspaceRootPath
+        );
+      });
+
+      const nextHistory = [nextEntry, ...deduped].slice(0, QUERY_HISTORY_LIMIT);
+      persistQueryHistory(nextHistory);
+      return nextHistory;
+    });
+  }, []);
+
+  const openWorkspaceFolder = useCallback(async (
+    folderPath: string,
+    options?: { initialSql?: string; statusMessage?: string }
+  ): Promise<void> => {
     try {
       const overview = await setWorkspaceFolder(folderPath);
       setWorkspace(overview);
@@ -148,13 +226,15 @@ export function App(): JSX.Element {
       setCurrentPage(1);
       setResultMeta(t("status.noQuery"));
 
-      if (overview.files.length > 0) {
+      if (typeof options?.initialSql === "string") {
+        setSql(options.initialSql);
+      } else if (overview.files.length > 0) {
         const first = overview.files[0];
         const firstSheet = first.sheets[0];
         setSql(`SELECT * FROM ${first.alias}.${firstSheet} LIMIT 100`);
       }
 
-      setStatus({ message: t("status.folderOpened"), isError: false });
+      setStatus({ message: options?.statusMessage ?? t("status.folderOpened"), isError: false });
     } catch (err) {
       setStatus({ message: String(err), isError: true });
     }
@@ -289,6 +369,7 @@ export function App(): JSX.Element {
 
       const queryResult = await executeSql(trimmedSql, false);
       setResult(queryResult);
+      rememberQueryExecution(trimmedSql, workspace.root_path);
       setCurrentPage(1);
       setResultMeta(
         t("meta.rows", {
@@ -311,6 +392,13 @@ export function App(): JSX.Element {
 
       setIsRunningQuery(false);
     }
+  }
+
+  async function handleSelectQueryHistory(entry: QueryHistoryEntry): Promise<void> {
+    await openWorkspaceFolder(entry.workspace_root_path, {
+      initialSql: entry.sql,
+      statusMessage: t("status.historyLoaded")
+    });
   }
 
   function handlePreviousPage(): void {
@@ -430,6 +518,8 @@ export function App(): JSX.Element {
               onSqlChange={setSql}
               onRunQuery={handleRunQuery}
               onExportQuery={handleExportQuery}
+              queryHistory={queryHistory}
+              onSelectQueryHistory={handleSelectQueryHistory}
               isRunning={isRunningQuery}
               isExporting={isExporting}
               workspace={workspace}

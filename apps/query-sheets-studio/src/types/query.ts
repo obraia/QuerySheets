@@ -33,3 +33,10 @@ export type StatusMessage = {
   message: string;
   isError: boolean;
 };
+
+export type QueryHistoryEntry = {
+  id: string;
+  sql: string;
+  workspace_root_path: string;
+  created_at: string;
+};

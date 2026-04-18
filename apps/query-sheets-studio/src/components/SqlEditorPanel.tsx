@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import CodeMirror from "@uiw/react-codemirror";
 import {
   autocompletion,
@@ -10,8 +11,8 @@ import {
 import { sql as sqlLanguage } from "@codemirror/lang-sql";
 import { oneDark } from "@codemirror/theme-one-dark";
 import { keymap } from "@codemirror/view";
-import { ChevronDown, Download } from "lucide-react";
-import type { ExportFormat, WorkspaceOverview } from "../types/query";
+import { ChevronDown, Download, History, X } from "lucide-react";
+import type { ExportFormat, QueryHistoryEntry, WorkspaceOverview } from "../types/query";
 import { useI18n } from "../i18n";
 
 type SqlSuggestionContext = "select" | "fromJoin" | "filter" | "generic";
@@ -221,22 +222,45 @@ type SqlEditorPanelProps = {
   onSqlChange: (value: string) => void;
   onRunQuery: () => Promise<void>;
   onExportQuery: (format: ExportFormat) => Promise<void>;
+  queryHistory: QueryHistoryEntry[];
+  onSelectQueryHistory: (entry: QueryHistoryEntry) => Promise<void>;
   isRunning: boolean;
   isExporting: boolean;
   workspace: WorkspaceOverview | null;
 };
+
+function formatHistoryTimestamp(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+
+  return date.toLocaleString();
+}
+
+function summarizeSql(sql: string): string {
+  const compact = sql.replace(/\s+/g, " ").trim();
+  if (compact.length <= 96) {
+    return compact;
+  }
+
+  return `${compact.slice(0, 93)}...`;
+}
 
 export function SqlEditorPanel({
   sql,
   onSqlChange,
   onRunQuery,
   onExportQuery,
+  queryHistory,
+  onSelectQueryHistory,
   isRunning,
   isExporting,
   workspace
 }: SqlEditorPanelProps): JSX.Element {
   const { t } = useI18n();
   const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
+  const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
   const exportMenuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -273,11 +297,34 @@ export function SqlEditorPanel({
     setIsExportMenuOpen(false);
   }, [isExporting]);
 
+  useEffect(() => {
+    if (!isHistoryModalOpen) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") {
+        setIsHistoryModalOpen(false);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isHistoryModalOpen]);
+
   const exportDisabled = isRunning || isExporting || !workspace;
+  const historyDisabled = isRunning || isExporting;
 
   function handleExportSelectionChange(format: ExportFormat): void {
     setIsExportMenuOpen(false);
     void onExportQuery(format);
+  }
+
+  function handleSelectHistoryEntry(entry: QueryHistoryEntry): void {
+    setIsHistoryModalOpen(false);
+    void onSelectQueryHistory(entry);
   }
 
   const tableColumnsByName = useMemo(() => {
@@ -466,77 +513,173 @@ export function SqlEditorPanel({
   );
 
   return (
-    <section className="rounded-2xl border border-slate-200/70 bg-white/90 shadow-[0_16px_40px_-26px_rgba(15,23,42,0.45)] backdrop-blur-md">
-      <header className="flex items-center justify-between border-b border-slate-100 px-4 py-3 lg:px-5">
-        <p className="text-sm font-semibold text-slate-800">query.sql</p>
-        <div className="relative flex items-center gap-3" ref={exportMenuRef}>
-          <p className="text-xs text-slate-500">
-            {isRunning
-              ? t("editor.executing")
-              : t("editor.shortcuts")}
-          </p>
+    <>
+      <section className="rounded-2xl border border-slate-200/70 bg-white/90 shadow-[0_16px_40px_-26px_rgba(15,23,42,0.45)] backdrop-blur-md">
+        <header className="flex items-center justify-between border-b border-slate-100 px-4 py-3 lg:px-5">
+          <p className="text-sm font-semibold text-slate-800">query.sql</p>
+          <div className="relative flex items-center gap-3" ref={exportMenuRef}>
+            <p className="text-xs text-slate-500">
+              {isRunning
+                ? t("editor.executing")
+                : t("editor.shortcuts")}
+            </p>
+
+            <button
+              type="button"
+              aria-label={t("editor.history")}
+              className="inline-flex items-center rounded-lg border border-transparent bg-white/70 p-1.5 text-slate-500 transition hover:border-slate-200 hover:text-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={() => setIsHistoryModalOpen(true)}
+              disabled={historyDisabled}
+              title={t("editor.history")}
+            >
+              <History size={15} strokeWidth={2} />
+            </button>
+
+            <button
+              type="button"
+              aria-label="Export query result"
+              aria-haspopup="menu"
+              aria-expanded={isExportMenuOpen}
+              className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-medium text-slate-600 transition hover:border-sky-300 hover:text-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={() => setIsExportMenuOpen((open) => !open)}
+              disabled={exportDisabled}
+              title={!workspace ? t("editor.exportOpenFolder") : t("editor.export")}
+            >
+              <Download size={14} strokeWidth={2} />
+              <ChevronDown size={14} strokeWidth={2} className={isExportMenuOpen ? "rotate-180" : ""} />
+            </button>
+
+            {isExportMenuOpen && (
+              <div
+                role="menu"
+                aria-label="Export format options"
+                className="absolute right-0 top-[calc(100%+8px)] z-20 w-48 rounded-xl border border-slate-200 bg-white p-2 shadow-lg"
+              >
+                <p className="mb-1 px-2 pt-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">
+                  {t("editor.exportFormat")}
+                </p>
+
+                <div className="grid gap-1">
+                  {EXPORT_OPTIONS.map((option) => (
+                    <button
+                      key={option.format}
+                      type="button"
+                      role="menuitem"
+                      className="flex items-center justify-between rounded-lg px-2 py-1.5 text-sm text-slate-700 transition hover:bg-sky-50 hover:text-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
+                      onClick={() => handleExportSelectionChange(option.format)}
+                      disabled={isExporting}
+                    >
+                      <span className="font-medium">{option.label}</span>
+                      <span className="text-xs text-slate-500">{option.detail}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </header>
+
+        <CodeMirror
+          value={sql}
+          height="240px"
+          minHeight="210px"
+          maxHeight="55vh"
+          theme={oneDark}
+          basicSetup={{
+            lineNumbers: true,
+            foldGutter: true,
+            highlightActiveLine: true,
+            autocompletion: false
+          }}
+          editable={!isRunning}
+          extensions={editorExtensions}
+          onChange={(value) => onSqlChange(value)}
+          className="sql-editor"
+        />
+      </section>
+
+      {renderHistoryModal(
+        isHistoryModalOpen,
+        t,
+        queryHistory,
+        historyDisabled,
+        () => setIsHistoryModalOpen(false),
+        handleSelectHistoryEntry
+      )}
+    </>
+  );
+}
+
+function renderHistoryModal(
+  isOpen: boolean,
+  t: ReturnType<typeof useI18n>["t"],
+  queryHistory: QueryHistoryEntry[],
+  historyDisabled: boolean,
+  onClose: () => void,
+  onSelect: (entry: QueryHistoryEntry) => void
+): JSX.Element | null {
+  if (!isOpen || typeof document === "undefined") {
+    return null;
+  }
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[120] flex items-start justify-center bg-slate-950/30 px-4 py-10 backdrop-blur-[2px]"
+      onClick={onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={t("editor.history")}
+        className="flex max-h-[70vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3 lg:px-5">
+          <div>
+            <p className="text-sm font-semibold text-slate-800">{t("editor.history")}</p>
+            <p className="mt-1 text-xs text-slate-500">{t("editor.historySubtitle")}</p>
+          </div>
 
           <button
             type="button"
-            aria-label="Export query result"
-            aria-haspopup="menu"
-            aria-expanded={isExportMenuOpen}
-            className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-medium text-slate-600 transition hover:border-sky-300 hover:text-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
-            onClick={() => setIsExportMenuOpen((open) => !open)}
-            disabled={exportDisabled}
-            title={!workspace ? t("editor.exportOpenFolder") : t("editor.export")}
+            aria-label={t("editor.closeHistory")}
+            className="inline-flex items-center rounded-lg border border-transparent p-1.5 text-slate-500 transition hover:border-slate-200 hover:bg-slate-50 hover:text-slate-700"
+            onClick={onClose}
           >
-            <Download size={14} strokeWidth={2} />
-            <ChevronDown size={14} strokeWidth={2} className={isExportMenuOpen ? "rotate-180" : ""} />
+            <X size={16} strokeWidth={2} />
           </button>
+        </div>
 
-          {isExportMenuOpen && (
-            <div
-              role="menu"
-              aria-label="Export format options"
-              className="absolute right-0 top-[calc(100%+8px)] z-20 w-48 rounded-xl border border-slate-200 bg-white p-2 shadow-lg"
-            >
-              <p className="mb-1 px-2 pt-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">
-                {t("editor.exportFormat")}
-              </p>
-
-              <div className="grid gap-1">
-                {EXPORT_OPTIONS.map((option) => (
-                  <button
-                    key={option.format}
-                    type="button"
-                    role="menuitem"
-                    className="flex items-center justify-between rounded-lg px-2 py-1.5 text-sm text-slate-700 transition hover:bg-sky-50 hover:text-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
-                    onClick={() => handleExportSelectionChange(option.format)}
-                    disabled={isExporting}
-                  >
-                    <span className="font-medium">{option.label}</span>
-                    <span className="text-xs text-slate-500">{option.detail}</span>
-                  </button>
-                ))}
-              </div>
+        <div className="overflow-y-auto px-4 py-4 lg:px-5">
+          {queryHistory.length === 0 ? (
+            <p className="text-sm text-slate-500">{t("editor.historyEmpty")}</p>
+          ) : (
+            <div className="grid gap-3">
+              {queryHistory.map((entry) => (
+                <button
+                  key={entry.id}
+                  type="button"
+                  className="rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-3 text-left transition hover:border-sky-300 hover:bg-sky-50"
+                  onClick={() => onSelect(entry)}
+                  title={t("editor.historyOpen")}
+                  disabled={historyDisabled}
+                >
+                  <p className="text-sm font-medium text-slate-800">
+                    {summarizeSql(entry.sql)}
+                  </p>
+                  <p className="mt-2 truncate text-xs text-slate-500">
+                    {t("editor.historyPath")}: {entry.workspace_root_path}
+                  </p>
+                  <p className="mt-1 text-[11px] text-slate-400">
+                    {formatHistoryTimestamp(entry.created_at)}
+                  </p>
+                </button>
+              ))}
             </div>
           )}
         </div>
-      </header>
-
-      <CodeMirror
-        value={sql}
-        height="240px"
-        minHeight="210px"
-        maxHeight="55vh"
-        theme={oneDark}
-        basicSetup={{
-          lineNumbers: true,
-          foldGutter: true,
-          highlightActiveLine: true,
-          autocompletion: false
-        }}
-        editable={!isRunning}
-        extensions={editorExtensions}
-        onChange={(value) => onSqlChange(value)}
-        className="sql-editor"
-      />
-    </section>
+      </div>
+    </div>,
+    document.body
   );
 }
