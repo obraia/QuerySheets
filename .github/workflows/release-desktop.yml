@@ -4,9 +4,9 @@ permissions:
   contents: write
 
 on:
-  release:
-    types:
-      - published
+  push:
+    tags:
+      - '**[0-9]+.[0-9]+.[0-9]+*'
 
 jobs:
   build-desktop-artifacts:
@@ -34,7 +34,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: refs/tags/${{ github.event.release.tag_name }}
+          ref: refs/tags/${{ github.ref_name }}
           persist-credentials: false
           submodules: recursive
       - name: Setup Node
@@ -67,7 +67,7 @@ jobs:
     runs-on: ubuntu-22.04
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      RELEASE_TAG: ${{ github.event.release.tag_name }}
+      RELEASE_TAG: ${{ github.ref_name }}
     steps:
       - name: Download desktop artifacts
         uses: actions/download-artifact@v7
@@ -75,6 +75,20 @@ jobs:
           pattern: desktop-*
           path: desktop-artifacts
           merge-multiple: true
+      - name: Wait for release created by cargo-dist
+        run: |
+          for i in {1..80}; do
+            if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+              echo "Release $RELEASE_TAG is ready"
+              exit 0
+            fi
+
+            echo "Waiting for release $RELEASE_TAG... ($i/80)"
+            sleep 15
+          done
+
+          echo "Release $RELEASE_TAG was not created in time"
+          exit 1
       - name: Upload desktop assets to release
         run: |
           mapfile -t files < <(find desktop-artifacts -type f)
