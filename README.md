@@ -133,6 +133,8 @@ cd ../..
 
 ### macOS
 
+> If you are installing from a GitHub Release artifact, check [Running Unsigned macOS Builds](#running-unsigned-macos-builds) for first-run Gatekeeper steps.
+
 1. Install Rust:
 
 ```bash
@@ -228,6 +230,32 @@ Desktop app build:
 cd apps/query-sheets-studio
 npm run tauri:build
 ```
+
+### Running Unsigned macOS Builds
+
+If you downloaded the `.dmg` from Releases and macOS shows a warning like "app is damaged" or blocks opening, it is usually Gatekeeper quarantine on a non-notarized build.
+
+1. Remove quarantine from the downloaded `.dmg`:
+
+```bash
+xattr -dr com.apple.quarantine ~/Downloads/QuerySheets*.dmg
+```
+
+2. Install the app to `/Applications`.
+
+3. Remove quarantine from the installed app:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/QuerySheets Studio.app"
+```
+
+4. Open the app for the first time:
+
+```bash
+open "/Applications/QuerySheets Studio.app"
+```
+
+If needed, use Finder and choose **Right click -> Open** on first launch.
 
 ## Repository Layout
 
